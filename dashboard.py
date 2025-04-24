@@ -113,6 +113,12 @@ else:
     # --- Sidebar Filters ---
     st.sidebar.header("Filters")
 
+    # EAN Filter
+    ean_search = st.sidebar.text_input("Search by EAN:", placeholder="Enter EAN...")
+
+    # SKU Filter
+    sku_search = st.sidebar.text_input("Search by SKU:", placeholder="Enter SKU...")
+
     # Text Search Filter
     search_term = st.sidebar.text_input("Search by Item Name:", placeholder="Enter item name...")
 
@@ -230,7 +236,17 @@ else:
     # if stock_days_range and stock_days_range[0] is not None and stock_days_range[1] is not None:
     #     df_final_filtered = df_final_filtered[df_final_filtered["Stock Days on Hand"].between(stock_days_range[0], stock_days_range[1], inclusive='both') | df_final_filtered["Stock Days on Hand"].isnull()]
 
-    # --- Apply Text Search Filter ---
+    # --- Apply Text Search Filters ---
+    # Apply EAN Filter (assuming EAN column exists and is string/object type)
+    if ean_search and 'EAN' in df_final_filtered.columns:
+        # Convert EAN column to string to ensure consistent comparison
+        df_final_filtered = df_final_filtered[df_final_filtered['EAN'].astype(str).str.contains(ean_search, case=False, na=False)]
+
+    # Apply SKU Filter (assuming SKU column exists)
+    if sku_search and 'SKU' in df_final_filtered.columns:
+        df_final_filtered = df_final_filtered[df_final_filtered['SKU'].astype(str).str.contains(sku_search, case=False, na=False)]
+
+    # Apply Item Name Filter
     if search_term:
          df_final_filtered = df_final_filtered[df_final_filtered['ITEM NAME'].str.contains(search_term, case=False, na=False)]
 
