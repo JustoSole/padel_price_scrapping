@@ -111,6 +111,9 @@ else:
     # --- Sidebar Filters ---
     st.sidebar.header("Filters")
 
+    # Text Search Filter
+    search_term = st.sidebar.text_input("Search by Item Name:", placeholder="Enter item name...")
+
     # Categorical Filters
     brands = st.sidebar.multiselect(
         "Select Brand(s):",
@@ -135,9 +138,6 @@ else:
         options=type1_options,
         default=type1_options
     )
-
-    # Text Search Filter
-    search_term = st.sidebar.text_input("Search by Item Name:", placeholder="Enter item name...")
 
     # Apply Categorical Filters
     # Handle empty selections - if empty, select all
@@ -203,12 +203,12 @@ else:
             st.sidebar.error(f"Error creating slider for {column_name}: {e}")
             return None, None
 
-    price_range = add_range_slider("LOWEST PRICE (B2C)")
-    map_range = add_range_slider("MAP")
-    rc_price_range = add_range_slider("RC Suggested Price")
-    cost_range = add_range_slider("Unit Cost")
-    stock_range = add_range_slider("Total Stock (QTY)")
-    stock_days_range = add_range_slider("Stock Days on Hand")
+    # price_range = add_range_slider("LOWEST PRICE (B2C)")
+    # map_range = add_range_slider("MAP")
+    # rc_price_range = add_range_slider("RC Suggested Price")
+    # cost_range = add_range_slider("Unit Cost")
+    # stock_range = add_range_slider("Total Stock (QTY)")
+    # stock_days_range = add_range_slider("Stock Days on Hand")
 
     # --- Apply Numerical Filters ---
     # Store original filtered df before numerical filters for comparison/KPIs if needed
@@ -216,20 +216,20 @@ else:
 
     # Apply filters safely, checking if range is valid
     # Use a temporary variable to chain filters
-    df_final_filtered = df_pre_numeric_filter.copy()
+    df_final_filtered = df_filtered.copy()
 
-    if price_range and price_range[0] is not None and price_range[1] is not None:
-         df_final_filtered = df_final_filtered[df_final_filtered["LOWEST PRICE (B2C)"].between(price_range[0], price_range[1], inclusive='both') | df_final_filtered["LOWEST PRICE (B2C)"].isnull()]
-    if map_range and map_range[0] is not None and map_range[1] is not None:
-         df_final_filtered = df_final_filtered[df_final_filtered["MAP"].between(map_range[0], map_range[1], inclusive='both') | df_final_filtered["MAP"].isnull()]
-    if rc_price_range and rc_price_range[0] is not None and rc_price_range[1] is not None:
-        df_final_filtered = df_final_filtered[df_final_filtered["RC Suggested Price"].between(rc_price_range[0], rc_price_range[1], inclusive='both') | df_final_filtered["RC Suggested Price"].isnull()]
-    if cost_range and cost_range[0] is not None and cost_range[1] is not None:
-        df_final_filtered = df_final_filtered[df_final_filtered["Unit Cost"].between(cost_range[0], cost_range[1], inclusive='both') | df_final_filtered["Unit Cost"].isnull()]
-    if stock_range and stock_range[0] is not None and stock_range[1] is not None:
-        df_final_filtered = df_final_filtered[df_final_filtered["Total Stock (QTY)"].between(stock_range[0], stock_range[1], inclusive='both') | df_final_filtered["Total Stock (QTY)"].isnull()]
-    if stock_days_range and stock_days_range[0] is not None and stock_days_range[1] is not None:
-        df_final_filtered = df_final_filtered[df_final_filtered["Stock Days on Hand"].between(stock_days_range[0], stock_days_range[1], inclusive='both') | df_final_filtered["Stock Days on Hand"].isnull()]
+    # if price_range and price_range[0] is not None and price_range[1] is not None:
+    #      df_final_filtered = df_final_filtered[df_final_filtered["LOWEST PRICE (B2C)"].between(price_range[0], price_range[1], inclusive='both') | df_final_filtered["LOWEST PRICE (B2C)"].isnull()]
+    # if map_range and map_range[0] is not None and map_range[1] is not None:
+    #      df_final_filtered = df_final_filtered[df_final_filtered["MAP"].between(map_range[0], map_range[1], inclusive='both') | df_final_filtered["MAP"].isnull()]
+    # if rc_price_range and rc_price_range[0] is not None and rc_price_range[1] is not None:
+    #     df_final_filtered = df_final_filtered[df_final_filtered["RC Suggested Price"].between(rc_price_range[0], rc_price_range[1], inclusive='both') | df_final_filtered["RC Suggested Price"].isnull()]
+    # if cost_range and cost_range[0] is not None and cost_range[1] is not None:
+    #     df_final_filtered = df_final_filtered[df_final_filtered["Unit Cost"].between(cost_range[0], cost_range[1], inclusive='both') | df_final_filtered["Unit Cost"].isnull()]
+    # if stock_range and stock_range[0] is not None and stock_range[1] is not None:
+    #     df_final_filtered = df_final_filtered[df_final_filtered["Total Stock (QTY)"].between(stock_range[0], stock_range[1], inclusive='both') | df_final_filtered["Total Stock (QTY)"].isnull()]
+    # if stock_days_range and stock_days_range[0] is not None and stock_days_range[1] is not None:
+    #     df_final_filtered = df_final_filtered[df_final_filtered["Stock Days on Hand"].between(stock_days_range[0], stock_days_range[1], inclusive='both') | df_final_filtered["Stock Days on Hand"].isnull()]
 
     # --- Apply Text Search Filter ---
     if search_term:
@@ -410,4 +410,4 @@ else:
 st.caption("ℹ️ **Data Source Note:** Competitor pricing data is obtained weekly (Thursdays, 8 AM US Central Time) by scraping competitor websites and matching products using their EAN codes.")
 
 # --- Add instructions to run ---
-st.sidebar.info("To run this dashboard: `streamlit run dashboard.py`") 
+# st.sidebar.info("To run this dashboard: `streamlit run dashboard.py`") 
