@@ -120,7 +120,6 @@ else:
     brands = st.sidebar.multiselect(
         "Select Brand(s):",
         options=sorted(df["BRAND"].unique()), # Sort options
-        default=df["BRAND"].unique()
     )
     # Add 'All' option helper
     def get_unique_options(column_name):
@@ -131,14 +130,12 @@ else:
     sports = st.sidebar.multiselect(
         "Select Sport(s):",
         options=sports_options,
-        default=sports_options
     )
 
     type1_options = get_unique_options("TYPE1")
     type1s = st.sidebar.multiselect(
         "Select Type1(s):",
         options=type1_options,
-        default=type1_options
     )
 
     # Apply Categorical Filters
@@ -447,8 +444,13 @@ else:
                 st.divider()
 
                 # --- Display Detailed Table ---
+                # Filter out rows where ALL competitor prices are NaN
+                if available_competitors: # Ensure there are competitors to check
+                    df_comparison = df_comparison.dropna(subset=available_competitors, how='all')
+
                 st.markdown("**Detailed Price Comparison:**")
                 st.caption(f"'{rc_price_col}' is our price. 'Diff vs [Competitor]' shows '{rc_price_col}' - '[Competitor Price]'. Negative values mean '{rc_price_col}' is cheaper.")
+                # Display the potentially filtered DataFrame
                 st.dataframe(df_comparison, use_container_width=True)
 
 
