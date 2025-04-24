@@ -1,0 +1,12 @@
+requests
+beautifulsoup4
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+selenium
+lxml
+urllib3
+streamlit
+pandas
+plotly 
