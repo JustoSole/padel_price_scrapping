@@ -57,7 +57,9 @@ def fetch_data(_gc: gspread.Client):
         for col in df.columns:
             # Identify numeric and percentage columns
             numeric_cols = ['LOWEST PRICE (B2C)', 'MAP', 'RC Suggested Price', 'Unit Cost',
-                            'Total Stock (QTY)', 'total Stock sold (last 12 M) (Qty)', 'Stock Days on Hand']
+                            'Total Stock (QTY)', 'total Stock sold (last 12 M) (Qty)', 'Stock Days on Hand',
+                            'RACKET CENTRAL', 'JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH'
+                           ]
             percentage_cols = ['RC Marginal Contribution (%)', 'B2B Marginal Contribution (%)']
             
             if col in numeric_cols or col in percentage_cols:
@@ -349,25 +351,7 @@ else:
 
         # --- Visualizations ---
         st.subheader("📊 Visualizations (Based on Filtered Data)")
-        tab1, tab2, tab3 = st.tabs(["Price Distributions", "Stock Analysis", "Margins & Costs"])
-
-        with tab1:
-            st.markdown("#### Price Distributions")
-            col1, col2 = st.columns(2)
-            with col1:
-                if not df_final_filtered['LOWEST PRICE (B2C)'].isnull().all():
-                     fig_b2c = px.histogram(df_final_filtered, x="LOWEST PRICE (B2C)", title="B2C Price Distribution", nbins=30)
-                     st.plotly_chart(fig_b2c, use_container_width=True)
-                else: st.info("No B2C Price data to display.")
-            with col2:
-                 if not df_final_filtered['RC Suggested Price'].isnull().all():
-                     fig_rc = px.histogram(df_final_filtered, x="RC Suggested Price", title="RC Suggested Price Distribution", nbins=30)
-                     st.plotly_chart(fig_rc, use_container_width=True)
-                 else: st.info("No RC Suggested Price data to display.")
-            # MAP Distribution (optional)
-            if 'MAP' in df_final_filtered.columns and not df_final_filtered['MAP'].isnull().all():
-                fig_map = px.histogram(df_final_filtered, x="MAP", title="MAP Distribution", nbins=30)
-                st.plotly_chart(fig_map, use_container_width=True)
+        tab2, tab3, tab_compare = st.tabs(["Stock Analysis", "Margins & Costs", "Price Comparison"])
 
         with tab2:
             st.markdown("#### Stock Analysis")
@@ -395,12 +379,71 @@ else:
                      st.plotly_chart(fig_margin_brand, use_container_width=True)
                 else: st.info("No Margin data to display.")
             with col2:
-                 if not df_final_filtered['Unit Cost'].isnull().all() and not df_final_filtered['RC Suggested Price'].isnull().all():
-                    fig_cost_price = px.scatter(df_final_filtered, x="Unit Cost", y="RC Suggested Price",
-                                                title="Unit Cost vs. RC Suggested Price",
+                 if not df_final_filtered['Unit Cost'].isnull().all() and not df_final_filtered['RACKET CENTRAL'].isnull().all():
+                    fig_cost_price = px.scatter(df_final_filtered, x="Unit Cost", y="RACKET CENTRAL",
+                                                title="Unit Cost vs. RACKET CENTRAL Price",
                                                 color="BRAND", hover_data=['ITEM NAME']) # Use 'ITEM NAME'
                     st.plotly_chart(fig_cost_price, use_container_width=True)
-                 else: st.info("Insufficient Cost or Price data for scatter plot.")
+                 else: st.info("Insufficient Cost or RACKET CENTRAL Price data for scatter plot.")
+
+        # --- Price Comparison Tab ---
+        with tab_compare:
+            st.markdown("#### Competitor Price Comparison")
+
+            # Define potential competitor columns
+            competitor_cols = ['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH']
+            rc_price_col = 'RACKET CENTRAL' # Our price column
+
+            # Identify competitors actually present in the filtered data
+            available_competitors = [col for col in competitor_cols if col in df_final_filtered.columns and not df_final_filtered[col].isnull().all()]
+
+            if not available_competitors:
+                st.info("No competitor pricing data available in the current selection for comparison.")
+            elif rc_price_col not in df_final_filtered.columns or df_final_filtered[rc_price_col].isnull().all():
+                 st.info(f"No '{rc_price_col}' pricing data available in the current selection for comparison.")
+            else:
+                # Create DataFrame for comparison
+                cols_to_compare = ['BRAND', 'ITEM NAME', rc_price_col] + available_competitors
+                df_comparison = df_final_filtered[cols_to_compare].copy()
+
+                # --- Calculate Differences and KPIs ---
+                st.markdown("**Summary vs Competitors:**")
+                kpi_compare_cols = st.columns(len(available_competitors))
+
+                for i, competitor in enumerate(available_competitors):
+                    diff_col_name = f"Diff vs {competitor}"
+                    # Calculate difference (RC - Competitor). Negative means RC is cheaper.
+                    # Ensure both columns are numeric before subtraction
+                    rc_numeric = pd.to_numeric(df_comparison[rc_price_col], errors='coerce')
+                    competitor_numeric = pd.to_numeric(df_comparison[competitor], errors='coerce')
+                    df_comparison[diff_col_name] = rc_numeric - competitor_numeric
+
+                    # Calculate KPIs for this competitor
+                    valid_comparisons = df_comparison[diff_col_name].notna()
+                    total_comparable = valid_comparisons.sum()
+
+                    if total_comparable > 0:
+                        rc_cheaper_count = (df_comparison[diff_col_name][valid_comparisons] < 0).sum()
+                        rc_more_expensive_count = (df_comparison[diff_col_name][valid_comparisons] > 0).sum()
+                        rc_same_price_count = (df_comparison[diff_col_name][valid_comparisons] == 0).sum()
+
+                        rc_cheaper_pct = rc_cheaper_count / total_comparable
+                        rc_more_expensive_pct = rc_more_expensive_count / total_comparable
+
+                        with kpi_compare_cols[i]:
+                            st.metric(label=f"vs {competitor} (Comparable: {total_comparable})", value=f"Cheaper: {rc_cheaper_count} ({rc_cheaper_pct:.1%})", delta=f"More Expensive: {rc_more_expensive_count} ({rc_more_expensive_pct:.1%})", delta_color="inverse")
+                    else:
+                         with kpi_compare_cols[i]:
+                             st.info(f"No comparable prices found for {competitor}.")
+
+
+                st.divider()
+
+                # --- Display Detailed Table ---
+                st.markdown("**Detailed Price Comparison:**")
+                st.caption(f"'{rc_price_col}' is our price. 'Diff vs [Competitor]' shows '{rc_price_col}' - '[Competitor Price]'. Negative values mean '{rc_price_col}' is cheaper.")
+                st.dataframe(df_comparison, use_container_width=True)
+
 
     # --- Display Original Data (Optional Expander) ---
     with st.expander("Show Original Full Data"):
