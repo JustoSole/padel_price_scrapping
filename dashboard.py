@@ -21,7 +21,6 @@ def get_gspread_client():
         # Ensure private_key is read correctly (Streamlit might handle newlines automatically)
         # If you encounter key errors, double-check the secrets.toml format.
         gc = gspread.service_account_from_dict(creds)
-        st.info("ℹ️ Google Sheets client initialized using Streamlit Secrets.") # Info message
         return gc
     except KeyError:
         st.error("❌ Google Sheets credentials (`[google_sheets]`) not found in Streamlit Secrets. Please configure secrets.toml locally or add secrets in the Streamlit Cloud app settings.")
@@ -98,6 +97,7 @@ def fetch_data(_gc: gspread.Client):
 # --- Streamlit App ---
 st.set_page_config(layout="wide", page_title="Pricing & Competition Dashboard")
 st.title("📊 Pricing & Competition Dashboard")
+st.caption("This dashboard provides insights into product pricing, stock levels, margins, and competitor pricing based on data from Google Sheets.")
 
 # Fetch data
 gc = get_gspread_client()
@@ -245,6 +245,7 @@ else:
     else:
         # --- KPIs ---
         st.subheader("Key Performance Indicators (Filtered Data)")
+        st.caption("High-level metrics calculated from the currently filtered data.")
         kpi_cols = st.columns(4)
         total_products = len(df_final_filtered)
         avg_b2c_price = df_final_filtered['LOWEST PRICE (B2C)'].mean()
@@ -281,6 +282,7 @@ else:
 
         # --- Data Table and Export ---
         st.subheader("Filtered Data")
+        st.caption("Detailed product data based on the selected filters. Use the download button to export.")
         # Make sure to drop the temporary calculation column before display/export
         display_df = df_final_filtered.drop(columns=['Stock Value', 'Sales Value (12M)'], errors='ignore')
         st.dataframe(display_df, use_container_width=True)
@@ -305,6 +307,7 @@ else:
 
         # --- Alerts ---
         st.subheader("⚠️ Alerts & Highlights")
+        st.caption("Highlights potential issues based on predefined thresholds (e.g., high/low stock, pricing below cost).")
         # Remove the columns layout
         # alert_cols = st.columns(3)
 
@@ -351,10 +354,12 @@ else:
 
         # --- Visualizations ---
         st.subheader("📊 Visualizations (Based on Filtered Data)")
+        st.caption("Visual representations of the filtered data across different categories.")
         tab2, tab3, tab_compare = st.tabs(["Stock Analysis", "Margins & Costs", "Price Comparison"])
 
         with tab2:
             st.markdown("#### Stock Analysis")
+            st.caption("Visualizations related to stock quantity and days on hand.")
             col1, col2 = st.columns(2)
             with col1:
                 if not df_final_filtered['Total Stock (QTY)'].isnull().all():
@@ -370,6 +375,7 @@ else:
 
         with tab3:
             st.markdown("#### Margins & Costs")
+            st.caption("Visualizations comparing costs, prices, and profit margins.")
             col1, col2 = st.columns(2)
             with col1:
                 if 'RC Marginal Contribution (%)' in df_final_filtered.columns and not df_final_filtered['RC Marginal Contribution (%)'].isnull().all():
@@ -389,6 +395,7 @@ else:
         # --- Price Comparison Tab ---
         with tab_compare:
             st.markdown("#### Competitor Price Comparison")
+            st.caption("Compares 'RACKET CENTRAL' prices against available competitor data.")
 
             # Define potential competitor columns
             competitor_cols = ['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH']
