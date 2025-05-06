@@ -57,7 +57,8 @@ def fetch_data(_gc: gspread.Client):
             # Identify numeric and percentage columns
             numeric_cols = ['LOWEST PRICE (B2C)', 'MAP', 'RC Suggested Price', 'Unit Cost',
                             'Total Stock (QTY)', 'total Stock sold (last 12 M) (Qty)', 'Stock Days on Hand',
-                            'RACKET CENTRAL', 'JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH'
+                            'RACKET CENTRAL', 'JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH',
+                            'PICKLEBALL CENTRAL'
                            ]
             percentage_cols = ['RC Marginal Contribution (%)', 'B2B Marginal Contribution (%)']
             
@@ -411,7 +412,7 @@ else:
             st.caption("Compares 'RACKET CENTRAL' prices against available competitor data.")
 
             # Define potential competitor columns
-            competitor_cols = ['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH']
+            competitor_cols = ['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH', 'PICKLEBALL CENTRAL']
             rc_price_col = 'RACKET CENTRAL' # Our price column
 
             # Identify competitors actually present in the filtered data
@@ -445,17 +446,75 @@ else:
                     if total_comparable > 0:
                         rc_cheaper_count = (df_comparison[diff_col_name][valid_comparisons] < 0).sum()
                         rc_more_expensive_count = (df_comparison[diff_col_name][valid_comparisons] > 0).sum()
-                        rc_same_price_count = (df_comparison[diff_col_name][valid_comparisons] == 0).sum()
+                        # rc_same_price_count = (df_comparison[diff_col_name][valid_comparisons] == 0).sum() # Not explicitly used in metric
 
-                        rc_cheaper_pct = rc_cheaper_count / total_comparable
-                        rc_more_expensive_pct = rc_more_expensive_count / total_comparable
+                        avg_diff = df_comparison[diff_col_name][valid_comparisons].mean()
+                        
+                        delta_text = f"Avg Diff: ${avg_diff:+.2f}"
+                        delta_color = "inverse" if avg_diff > 0 else "normal" # 'inverse' if RC is more expensive on avg
 
                         with kpi_compare_cols[i]:
-                            st.metric(label=f"vs {competitor} (Comparable: {total_comparable})", value=f"Cheaper: {rc_cheaper_count} ({rc_cheaper_pct:.1%})", delta=f"More Expensive: {rc_more_expensive_count} ({rc_more_expensive_pct:.1%})", delta_color="inverse")
+                            st.metric(
+                                label=f"vs {competitor} ({total_comparable} comparable)",
+                                value=f"RC Cheaper: {rc_cheaper_count}",
+                                delta=delta_text,
+                                delta_color=delta_color
+                            )
+                            st.caption(f"RC More Expensive: {rc_more_expensive_count}")
                     else:
                          with kpi_compare_cols[i]:
                              st.info(f"No comparable prices found for {competitor}.")
+                
+                st.divider()
 
+                # --- Overall Price Position Analysis ---
+                st.markdown("**Overall Price Position:**")
+                
+                # Calculate where RACKET CENTRAL is lowest priced
+                rc_is_lowest_count = 0
+                if rc_price_col in df_comparison.columns and available_competitors:
+                    for index, row in df_comparison.iterrows():
+                        rc_price_val = pd.to_numeric(row[rc_price_col], errors='coerce')
+                        if pd.isna(rc_price_val):
+                            continue
+
+                        competitor_prices_for_row = [pd.to_numeric(row[c], errors='coerce') for c in available_competitors if pd.notna(row[c])]
+                        
+                        # Filter out NaNs that might have resulted from coerce
+                        competitor_prices_for_row = [p for p in competitor_prices_for_row if pd.notna(p)]
+
+                        if not competitor_prices_for_row: # No valid competitor prices for this row
+                            rc_is_lowest_count += 1 # RC is trivially lowest if it has a price
+                            continue
+                        
+                        min_competitor_price = min(competitor_prices_for_row)
+                        if rc_price_val <= min_competitor_price:
+                            rc_is_lowest_count += 1
+                
+                # Calculate where RACKET CENTRAL has a higher price than at least one competitor
+                rc_is_higher_count = 0
+                if rc_price_col in df_comparison.columns and available_competitors:
+                    for index, row in df_comparison.iterrows():
+                        rc_price_val = pd.to_numeric(row[rc_price_col], errors='coerce')
+                        if pd.isna(rc_price_val):
+                            continue
+                        
+                        has_at_least_one_comparable_competitor = False
+                        for comp_col in available_competitors:
+                            competitor_price_val = pd.to_numeric(row[comp_col], errors='coerce')
+                            if pd.notna(competitor_price_val):
+                                has_at_least_one_comparable_competitor = True
+                                if rc_price_val > competitor_price_val:
+                                    rc_is_higher_count += 1
+                                    break # Found one competitor RC is more expensive than
+                        # If there were no competitors with prices for this item, it can't be "higher"
+                        # The break ensures we count the product only once
+
+                overall_kpi_cols = st.columns(2)
+                with overall_kpi_cols[0]:
+                    st.metric("Products where RC is Lowest Priced", f"{rc_is_lowest_count}")
+                with overall_kpi_cols[1]:
+                    st.metric("Products where RC is Higher Priced (vs any competitor)", f"{rc_is_higher_count}")
 
                 st.divider()
 
