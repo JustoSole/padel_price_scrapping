@@ -111,6 +111,10 @@ else:
 
     df = df_original.copy() # Work with a copy for filtering
 
+    # --- Define global constants for columns ---
+    ALL_COMPETITOR_COLUMNS = sorted(['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH', 'PICKLEBALL CENTRAL'])
+    RC_PRICE_COLUMN = 'RACKET CENTRAL'
+
     # --- Sidebar Filters ---
     st.sidebar.header("Filters")
 
@@ -143,6 +147,13 @@ else:
     type1s = st.sidebar.multiselect(
         "Select Type1(s):",
         options=type1_options,
+    )
+
+    # New Competitor Filter for Co-occurrence
+    selected_competitors_for_coccurrence_filter = st.sidebar.multiselect(
+        "Show Products Priced by RC & Selected Competitor(s):",
+        options=ALL_COMPETITOR_COLUMNS,
+        help="Filters data to show only products where Racket Central AND at least one of the selected competitors have a price."
     )
 
     # Apply Categorical Filters
@@ -251,6 +262,83 @@ else:
     if search_term:
          df_final_filtered = df_final_filtered[df_final_filtered['ITEM NAME'].str.contains(search_term, case=False, na=False)]
 
+    # Apply Co-occurrence Filter based on selected competitors
+    if selected_competitors_for_coccurrence_filter:
+        rows_to_keep_coccurrence = []
+        for index, row in df_final_filtered.iterrows():
+            rc_price_is_valid = pd.notna(pd.to_numeric(row.get(RC_PRICE_COLUMN), errors='coerce'))
+            if not rc_price_is_valid:
+                continue
+
+            at_least_one_selected_competitor_has_price = False
+            for comp_col in selected_competitors_for_coccurrence_filter:
+                if comp_col in row and pd.notna(pd.to_numeric(row[comp_col], errors='coerce')):
+                    at_least_one_selected_competitor_has_price = True
+                    break
+            
+            if at_least_one_selected_competitor_has_price:
+                rows_to_keep_coccurrence.append(index)
+        
+        df_final_filtered = df_final_filtered.loc[rows_to_keep_coccurrence]
+
+    # --- Calculate Price Comparison KPIs ---
+    total_comparable_products_kpi = 0
+    rc_is_lowest_count_kpi = 0
+    rc_is_higher_count_kpi = 0
+    percentage_lowest_kpi = 0.0
+    percentage_higher_kpi = 0.0
+    available_competitors_for_kpi_count = 0
+
+    if not df_final_filtered.empty:
+        # Determine which competitors to consider for these main KPIs
+        competitors_to_consider_for_main_kpi = []
+        if selected_competitors_for_coccurrence_filter: # User has specifically filtered by competitors
+            competitors_to_consider_for_main_kpi = [
+                col for col in selected_competitors_for_coccurrence_filter
+                if col in df_final_filtered.columns and not df_final_filtered[col].isnull().all()
+            ]
+        else: # No specific competitor filter, so consider all available in the (already filtered) data
+            competitors_to_consider_for_main_kpi = [
+                col for col in ALL_COMPETITOR_COLUMNS
+                if col in df_final_filtered.columns and not df_final_filtered[col].isnull().all()
+            ]
+        available_competitors_for_kpi_count = len(competitors_to_consider_for_main_kpi)
+
+        if RC_PRICE_COLUMN in df_final_filtered.columns and not df_final_filtered[RC_PRICE_COLUMN].isnull().all() and competitors_to_consider_for_main_kpi:
+            for index, row in df_final_filtered.iterrows(): # df_final_filtered is already pre-filtered by co-occurrence if selected
+                rc_price_val = pd.to_numeric(row[RC_PRICE_COLUMN], errors='coerce')
+                # RC price validity is already ensured if co-occurrence filter was active. 
+                # If not active, we might have rows with RC NaN, but the next check handles it.
+                if pd.isna(rc_price_val):
+                    continue
+
+                current_competitor_prices_for_kpi = []
+                for comp_col in competitors_to_consider_for_main_kpi:
+                    comp_price = pd.to_numeric(row.get(comp_col), errors='coerce') # Use .get() for safety
+                    if pd.notna(comp_price):
+                        current_competitor_prices_for_kpi.append(comp_price)
+
+                if not current_competitor_prices_for_kpi: # No prices from *considered* competitors for this row
+                    continue 
+
+                total_comparable_products_kpi += 1 # This row is comparable based on RC and *considered* competitors
+
+                min_comp_price = min(current_competitor_prices_for_kpi)
+                if rc_price_val <= min_comp_price:
+                    rc_is_lowest_count_kpi += 1
+                
+                is_higher_this_row = False
+                for comp_price_val_check in current_competitor_prices_for_kpi:
+                    if rc_price_val > comp_price_val_check:
+                        is_higher_this_row = True
+                        break
+                if is_higher_this_row:
+                    rc_is_higher_count_kpi += 1
+            
+            if total_comparable_products_kpi > 0:
+                percentage_lowest_kpi = (rc_is_lowest_count_kpi / total_comparable_products_kpi) * 100
+                percentage_higher_kpi = (rc_is_higher_count_kpi / total_comparable_products_kpi) * 100
+
     # --- Main Display ---
     st.header("📊 Dashboard Overview")
 
@@ -258,7 +346,7 @@ else:
         st.warning("No data matches the selected filters.")
     else:
         # --- KPIs ---
-        st.subheader("Key Performance Indicators (Filtered Data)")
+        st.subheader("Key Performance Indicators")
         st.caption("High-level metrics calculated from the currently filtered data.")
         kpi_cols = st.columns(4)
         total_products = len(df_final_filtered)
@@ -292,23 +380,128 @@ else:
         kpi_cols_row3 = st.columns(4) # Use 4 columns for alignment, place KPI in the first
         kpi_cols_row3[0].metric("Total Sales (12M)", f"${total_sales_12m:,.2f}" if pd.notna(total_sales_12m) else "N/A")
 
+        # Add Price Competitiveness KPIs
+        st.subheader("Price Competitiveness")
+        kpi_comp_row = st.columns(3)
+        kpi_comp_row[0].metric(
+            "Total Comparable Products",
+            f"{total_comparable_products_kpi}"
+        )
+        kpi_comp_row[1].metric(
+            f"RC Lowest Priced",
+            f"{rc_is_lowest_count_kpi} ({percentage_lowest_kpi:.1f}%)"
+        )
+        kpi_comp_row[2].metric(
+            f"RC Higher Priced",
+            f"{rc_is_higher_count_kpi} ({percentage_higher_kpi:.1f}%)"
+        )
+        if selected_competitors_for_coccurrence_filter:
+            st.caption(f"Competitiveness KPIs based on products also priced by {available_competitors_for_kpi_count} selected competitor(s).")
+        elif available_competitors_for_kpi_count > 0:
+            st.caption(f"Competitiveness KPIs based on {available_competitors_for_kpi_count} active competitor(s) in the filtered data.")
+        else:
+            st.caption("No active competitor data in the filtered selection for these KPIs.")
+
         st.divider()
 
         # --- Data Table and Export ---
         st.subheader("Filtered Data")
         st.caption("Detailed product data based on the selected filters. Use the download button to export.")
-        # Make sure to drop the temporary calculation column before display/export
-        display_df = df_final_filtered.drop(columns=['Stock Value', 'Sales Value (12M)'], errors='ignore')
-        st.dataframe(display_df, use_container_width=True)
+
+        # --- Add 'RC Cheaper?' column to df_final_filtered for display and potential export ---
+        if not df_final_filtered.empty:
+            rc_cheaper_status_list = []
+            for index, row in df_final_filtered.iterrows():
+                rc_price_val = pd.to_numeric(row.get(RC_PRICE_COLUMN), errors='coerce')
+                status = "N/A"  # Default status
+
+                if pd.notna(rc_price_val):
+                    competitor_prices_for_row = []
+                    for comp_col in ALL_COMPETITOR_COLUMNS:
+                        if comp_col in row:
+                            comp_price = pd.to_numeric(row[comp_col], errors='coerce')
+                            if pd.notna(comp_price):
+                                competitor_prices_for_row.append(comp_price)
+                    
+                    if competitor_prices_for_row:  # If there are competitor prices
+                        min_competitor_price = min(competitor_prices_for_row)
+                        if rc_price_val < min_competitor_price:
+                            status = "Cheaper"
+                        elif rc_price_val == min_competitor_price:
+                            status = "Equal"
+                        else: # rc_price_val > min_competitor_price
+                            status = "Higher"
+                    # else: RC price exists, but no competitor prices, status remains "N/A"
+                # else: RC price is NaN, status remains "N/A"
+                rc_cheaper_status_list.append(status)
+            df_final_filtered['RC Cheaper?'] = rc_cheaper_status_list
+        else:
+            # Ensure the column exists even if df_final_filtered is empty, for consistent downstream processing
+            if 'RC Cheaper?' not in df_final_filtered.columns:
+                 df_final_filtered['RC Cheaper?'] = pd.Series(dtype='object')
+
+        # --- Prepare df_for_ui for the main table in the UI ---
+        # Columns to explicitly hide from the main display table in the UI
+        cols_to_hide_in_ui = ['BRAND', 'SPORT', 'TYPE1']
+        # Columns to always drop from any display/export (e.g. temporary KPI calculation helpers)
+        cols_to_always_drop = ['Stock Value', 'Sales Value (12M)'] 
+
+        # Start with all columns from df_final_filtered (which now includes 'RC Cheaper?')
+        potential_ui_cols = df_final_filtered.columns.tolist()
+        
+        # Remove columns that should never be shown or were temporary
+        actual_ui_cols = [col for col in potential_ui_cols if col not in cols_to_always_drop]
+        # Further refine for UI: remove columns designated to be hidden in this specific table
+        actual_ui_cols = [col for col in actual_ui_cols if col not in cols_to_hide_in_ui]
+
+        # Reorder to place 'RC Cheaper?' after 'ITEM NAME' if both exist
+        if 'ITEM NAME' in actual_ui_cols and 'RC Cheaper?' in actual_ui_cols:
+            actual_ui_cols.remove('RC Cheaper?')
+            try:
+                item_name_idx = actual_ui_cols.index('ITEM NAME')
+                actual_ui_cols.insert(item_name_idx + 1, 'RC Cheaper?')
+            except ValueError:
+                # If 'ITEM NAME' isn't in actual_ui_cols for some reason, just append 'RC Cheaper?' at the end
+                actual_ui_cols.append('RC Cheaper?')
+        elif 'RC Cheaper?' not in actual_ui_cols and 'RC Cheaper?' in df_final_filtered.columns.tolist() : # if it got filtered out but should be there
+            actual_ui_cols.append('RC Cheaper?')
+
+        # Create the DataFrame for UI display
+        df_for_ui = df_final_filtered[actual_ui_cols] if actual_ui_cols and not df_final_filtered.empty else pd.DataFrame(columns=actual_ui_cols)
+        
+        # Define styling function for the 'RC Cheaper?' column
+        def style_rc_cheaper(val):
+            if val == "Cheaper": # Changed from "Yes"
+                return 'background-color: lightgreen; color: darkgreen; font-weight: bold;'
+            elif val == "Higher": # Changed from "No"
+                return 'background-color: lightcoral; color: darkred; font-weight: bold;'
+            elif val == "Equal": # New status
+                return 'background-color: lightyellow; color: #B8860B; font-weight: bold;' # DarkGoldenrod
+            else:  # For "N/A"
+                return '' # No special style for N/A
+
+        if not df_for_ui.empty:
+            if 'RC Cheaper?' in df_for_ui.columns:
+                st.dataframe(
+                    df_for_ui.style.applymap(style_rc_cheaper, subset=['RC Cheaper?']),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else: # Display without styling if 'RC Cheaper?' column isn't in the final UI df
+                st.dataframe(df_for_ui, use_container_width=True, hide_index=True)
+        else:
+            st.info("No data to display in the main table based on current filters.")
 
         # Function to convert DF to CSV
+        # The CSV export should use df_final_filtered (which includes 'RC Cheaper?' and original columns like BRAND, SPORT, TYPE1)
+        # but drop the temporary calculation columns.
         @st.cache_data # Cache conversion
         def convert_df_to_csv(df_to_convert):
-            # Drop temporary columns before converting to CSV
-            df_to_export = df_to_convert.drop(columns=['Stock Value', 'Sales Value (12M)'], errors='ignore')
+            # df_to_convert is df_final_filtered
+            df_to_export = df_to_convert.drop(columns=cols_to_always_drop, errors='ignore')
             return df_to_export.to_csv(index=False).encode('utf-8')
 
-        csv = convert_df_to_csv(df_final_filtered) # Pass the filtered df
+        csv = convert_df_to_csv(df_final_filtered) # Pass the df_final_filtered (now with 'RC Cheaper?')
 
         st.download_button(
             label="📥 Download Filtered Data as CSV",
@@ -332,7 +525,7 @@ else:
         st.warning(f"High Stock ({len(df_high_stock)} items > {HIGH_STOCK_DAYS} days)")
         if not df_high_stock.empty:
             # Removed height=200
-            st.dataframe(df_high_stock[['BRAND', 'ITEM NAME', 'Stock Days on Hand']].sort_values('Stock Days on Hand', ascending=False), use_container_width=True)
+            st.dataframe(df_high_stock[['BRAND', 'ITEM NAME', 'Stock Days on Hand']].sort_values('Stock Days on Hand', ascending=False), use_container_width=True, hide_index=True)
         else:
             st.info("No items with high stock days.")
         st.divider() # Add divider between alerts
@@ -344,7 +537,7 @@ else:
         st.warning(f"Low Stock ({len(df_low_stock)} items < {LOW_STOCK_DAYS} days)")
         if not df_low_stock.empty:
              # Reverted .head(50) and removed height limit
-             st.dataframe(df_low_stock[['BRAND', 'ITEM NAME', 'Stock Days on Hand']].sort_values('Stock Days on Hand'), use_container_width=True)
+             st.dataframe(df_low_stock[['BRAND', 'ITEM NAME', 'Stock Days on Hand']].sort_values('Stock Days on Hand'), use_container_width=True, hide_index=True)
         else:
             st.info("No items with low stock days.")
         st.divider() # Add divider between alerts
@@ -355,7 +548,7 @@ else:
         st.error(f"Price Below Cost ({len(df_below_cost)} items)")
         if not df_below_cost.empty:
             # Removed height=200
-            st.dataframe(df_below_cost[['BRAND', 'ITEM NAME', 'Unit Cost', 'RACKET CENTRAL']], use_container_width=True)
+            st.dataframe(df_below_cost[['BRAND', 'ITEM NAME', 'Unit Cost', 'RACKET CENTRAL']], use_container_width=True, hide_index=True)
         else:
             st.info("No items priced below cost.")
 
@@ -367,7 +560,7 @@ else:
         st.divider()
 
         # --- Visualizations ---
-        st.subheader("📊 Visualizations (Based on Filtered Data)")
+        st.subheader("📊 Visualizations")
         st.caption("Visual representations of the filtered data across different categories.")
         tab2, tab3, tab_compare = st.tabs(["Stock Analysis", "Margins & Costs", "Price Comparison"])
 
@@ -468,55 +661,10 @@ else:
                 st.divider()
 
                 # --- Overall Price Position Analysis ---
-                st.markdown("**Overall Price Position:**")
-                
-                # Calculate where RACKET CENTRAL is lowest priced
-                rc_is_lowest_count = 0
-                if rc_price_col in df_comparison.columns and available_competitors:
-                    for index, row in df_comparison.iterrows():
-                        rc_price_val = pd.to_numeric(row[rc_price_col], errors='coerce')
-                        if pd.isna(rc_price_val):
-                            continue
-
-                        competitor_prices_for_row = [pd.to_numeric(row[c], errors='coerce') for c in available_competitors if pd.notna(row[c])]
-                        
-                        # Filter out NaNs that might have resulted from coerce
-                        competitor_prices_for_row = [p for p in competitor_prices_for_row if pd.notna(p)]
-
-                        if not competitor_prices_for_row: # No valid competitor prices for this row
-                            rc_is_lowest_count += 1 # RC is trivially lowest if it has a price
-                            continue
-                        
-                        min_competitor_price = min(competitor_prices_for_row)
-                        if rc_price_val <= min_competitor_price:
-                            rc_is_lowest_count += 1
-                
-                # Calculate where RACKET CENTRAL has a higher price than at least one competitor
-                rc_is_higher_count = 0
-                if rc_price_col in df_comparison.columns and available_competitors:
-                    for index, row in df_comparison.iterrows():
-                        rc_price_val = pd.to_numeric(row[rc_price_col], errors='coerce')
-                        if pd.isna(rc_price_val):
-                            continue
-                        
-                        has_at_least_one_comparable_competitor = False
-                        for comp_col in available_competitors:
-                            competitor_price_val = pd.to_numeric(row[comp_col], errors='coerce')
-                            if pd.notna(competitor_price_val):
-                                has_at_least_one_comparable_competitor = True
-                                if rc_price_val > competitor_price_val:
-                                    rc_is_higher_count += 1
-                                    break # Found one competitor RC is more expensive than
-                        # If there were no competitors with prices for this item, it can't be "higher"
-                        # The break ensures we count the product only once
-
-                overall_kpi_cols = st.columns(2)
-                with overall_kpi_cols[0]:
-                    st.metric("Products where RC is Lowest Priced", f"{rc_is_lowest_count}")
-                with overall_kpi_cols[1]:
-                    st.metric("Products where RC is Higher Priced (vs any competitor)", f"{rc_is_higher_count}")
-
-                st.divider()
+                # This section is now moved to the main KPIs above.
+                # st.markdown("**Overall Price Position:**")
+                # ... (original code for overall price position was here) ...
+                # st.divider()
 
                 # --- Display Detailed Table ---
                 # Filter out rows where ALL competitor prices are NaN
@@ -526,12 +674,12 @@ else:
                 st.markdown("**Detailed Price Comparison:**")
                 st.caption(f"'{rc_price_col}' is our price. 'Diff vs [Competitor]' shows '{rc_price_col}' - '[Competitor Price]'. Negative values mean '{rc_price_col}' is cheaper.")
                 # Display the potentially filtered DataFrame
-                st.dataframe(df_comparison, use_container_width=True)
+                st.dataframe(df_comparison, use_container_width=True, hide_index=True)
 
 
     # --- Display Original Data (Optional Expander) ---
     with st.expander("Show Original Full Data"):
-       st.dataframe(df_original, use_container_width=True)
+       st.dataframe(df_original, use_container_width=True, hide_index=True)
 
 # --- Add source information ---
 st.caption("ℹ️ **Data Source Note:** Competitor pricing data is obtained weekly (Thursdays, 8 AM US Central Time) by scraping competitor websites and matching products using their EAN codes.")
