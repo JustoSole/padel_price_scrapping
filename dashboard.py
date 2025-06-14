@@ -1458,347 +1458,338 @@ else:
                                 cols_to_keep_for_staging_b2b_unique = [x for x in cols_to_keep_for_staging_b2b if not (x in seen_b2b or seen_b2b.add(x))]
                                 st.session_state.staged_scenario_items.append(df_to_stage_b2b[cols_to_keep_for_staging_b2b_unique])                                
                                 st.success(f"{len(df_to_stage_b2b)} B2B items added to scenario with {discount_rc_b2b}% discount")                                                    
-                                st.info("No B2B simulation data to display based on current selections and applied discounts")
-
-            elif df_sim_filtered.empty: # Check if the globally filtered df is empty
-                 st.info("No products match the current sidebar filters. Please adjust sidebar filters to populate products for simulation.")
-                            
-            # --- Consolidated Scenario Analysis Section ---
-            st.markdown("--- ") # Visual Separator
-            st.header("📊 Análisis de Escenario Consolidado")
-            st.caption("Aquí se muestran los productos que has añadido al escenario con sus respectivos descuentos aplicados. Puedes eliminar lotes individualmente o limpiar todo el escenario.")
-
-            # --- KPIs Consolidados del Escenario ---
-            if st.session_state.staged_scenario_items: # Only show if there are items
-                with st.expander("📊 KPIs Agregados del Escenario Completo", expanded=True):
-                    df_scenario_all_items = pd.concat(st.session_state.staged_scenario_items, ignore_index=True).copy()
-
-                    cost_col = 'Unit Cost'
-                    
-                    # Initialize Effective Columns
-                    df_scenario_all_items['Effective Current Price'] = pd.NA
-                    df_scenario_all_items['Effective New Price'] = pd.NA
-                    df_scenario_all_items['Effective Current Margin (%)'] = pd.NA
-                    df_scenario_all_items['Effective New Margin (%)'] = pd.NA
-
-                    b2c_mask_scenario = df_scenario_all_items['Scenario Type'] == 'B2C'
-                    b2b_mask_scenario = df_scenario_all_items['Scenario Type'] == 'B2B'
-
-                    # --- Effective Current Price ---
-                    if RC_PRICE_COLUMN in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Price'] = df_scenario_all_items.loc[b2c_mask_scenario, RC_PRICE_COLUMN]
-                    if RC_B2B_PRICE_COLUMN in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Price'] = df_scenario_all_items.loc[b2b_mask_scenario, RC_B2B_PRICE_COLUMN]
-
-                    # --- Effective New Price ---
-                    if 'New RC Price' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Price'] = df_scenario_all_items.loc[b2c_mask_scenario, 'New RC Price']
-                    if 'New RC B2B Price' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Price'] = df_scenario_all_items.loc[b2b_mask_scenario, 'New RC B2B Price']
-
-                    # --- Effective Margins ---
-                    if cost_col in df_scenario_all_items.columns:
-                        numeric_cost_scenario = pd.to_numeric(df_scenario_all_items[cost_col], errors='coerce')
-                        cost_is_valid_mask_scenario = numeric_cost_scenario.notna()
-
-                        # Effective Current Margin
-                        current_price_eff = pd.to_numeric(df_scenario_all_items['Effective Current Price'], errors='coerce')
-                        current_price_valid_eff = current_price_eff.notna() & (current_price_eff != 0)
-                        final_current_margin_mask_eff = cost_is_valid_mask_scenario & current_price_valid_eff
-                        if final_current_margin_mask_eff.any():
-                            df_scenario_all_items.loc[final_current_margin_mask_eff, 'Effective Current Margin (%)'] = \
-                                ((current_price_eff[final_current_margin_mask_eff] - numeric_cost_scenario[final_current_margin_mask_eff]) / current_price_eff[final_current_margin_mask_eff]) * 100
-
-                        # Effective New Margin
-                        new_price_eff = pd.to_numeric(df_scenario_all_items['Effective New Price'], errors='coerce')
-                        new_price_valid_eff = new_price_eff.notna() & (new_price_eff != 0)
-                        final_new_margin_mask_eff = cost_is_valid_mask_scenario & new_price_valid_eff
-                        if final_new_margin_mask_eff.any():
-                            df_scenario_all_items.loc[final_new_margin_mask_eff, 'Effective New Margin (%)'] = \
-                                ((new_price_eff[final_new_margin_mask_eff] - numeric_cost_scenario[final_new_margin_mask_eff]) / new_price_eff[final_new_margin_mask_eff]) * 100
-                    
-                    # --- Effective Markups ---
-                    map_col = 'MAP' # Ensure map_col is defined
-                    df_scenario_all_items['Effective Current Markup on Cost (%)'] = pd.NA
-                    df_scenario_all_items['Effective New Markup on Cost (%)'] = pd.NA
-                    df_scenario_all_items['Effective Current Markup on MAP (%)'] = pd.NA
-                    df_scenario_all_items['Effective New Markup on MAP (%)'] = pd.NA
-
-                    if cost_col in df_scenario_all_items.columns:
-                        numeric_cost_scenario = pd.to_numeric(df_scenario_all_items[cost_col], errors='coerce')
-                        cost_is_valid_and_nonzero_scenario = numeric_cost_scenario.notna() & (numeric_cost_scenario != 0)
-
-                        # Effective Current Markup on Cost
-                        current_price_eff = pd.to_numeric(df_scenario_all_items['Effective Current Price'], errors='coerce')
-                        current_price_valid_eff_markup_cost = current_price_eff.notna() & cost_is_valid_and_nonzero_scenario
-                        if current_price_valid_eff_markup_cost.any():
-                            df_scenario_all_items.loc[current_price_valid_eff_markup_cost, 'Effective Current Markup on Cost (%)'] = \
-                                ((current_price_eff[current_price_valid_eff_markup_cost] - numeric_cost_scenario[current_price_valid_eff_markup_cost]) / numeric_cost_scenario[current_price_valid_eff_markup_cost]) * 100
-
-                        # Effective New Markup on Cost
-                        new_price_eff = pd.to_numeric(df_scenario_all_items['Effective New Price'], errors='coerce')
-                        new_price_valid_eff_markup_cost = new_price_eff.notna() & cost_is_valid_and_nonzero_scenario
-                        if new_price_valid_eff_markup_cost.any():
-                            df_scenario_all_items.loc[new_price_valid_eff_markup_cost, 'Effective New Markup on Cost (%)'] = \
-                                ((new_price_eff[new_price_valid_eff_markup_cost] - numeric_cost_scenario[new_price_valid_eff_markup_cost]) / numeric_cost_scenario[new_price_valid_eff_markup_cost]) * 100
-
-                    if map_col in df_scenario_all_items.columns:
-                        numeric_map_scenario = pd.to_numeric(df_scenario_all_items[map_col], errors='coerce')
-                        map_is_valid_and_nonzero_scenario = numeric_map_scenario.notna() & (numeric_map_scenario != 0)
-
-                        # Effective Current Markup on MAP
-                        current_price_eff_map = pd.to_numeric(df_scenario_all_items['Effective Current Price'], errors='coerce') # Re-fetch to avoid altering current_price_eff used for cost markup
-                        current_price_valid_eff_markup_map = current_price_eff_map.notna() & map_is_valid_and_nonzero_scenario
-                        if current_price_valid_eff_markup_map.any():
-                            df_scenario_all_items.loc[current_price_valid_eff_markup_map, 'Effective Current Markup on MAP (%)'] = \
-                                ((current_price_eff_map[current_price_valid_eff_markup_map] - numeric_map_scenario[current_price_valid_eff_markup_map]) / numeric_map_scenario[current_price_valid_eff_markup_map]) * 100
-
-                        # Effective New Markup on MAP
-                        new_price_eff_map = pd.to_numeric(df_scenario_all_items['Effective New Price'], errors='coerce') # Re-fetch
-                        new_price_valid_eff_markup_map = new_price_eff_map.notna() & map_is_valid_and_nonzero_scenario
-                        if new_price_valid_eff_markup_map.any():
-                            df_scenario_all_items.loc[new_price_valid_eff_markup_map, 'Effective New Markup on MAP (%)'] = \
-                                ((new_price_eff_map[new_price_valid_eff_markup_map] - numeric_map_scenario[new_price_valid_eff_markup_map]) / numeric_map_scenario[new_price_valid_eff_markup_map]) * 100
-
-                    # --- Calculate Aggregated Average KPIs for Markups ---
-                    avg_scenario_current_markup_cost = pd.to_numeric(df_scenario_all_items['Effective Current Markup on Cost (%)'], errors='coerce').mean()
-                    avg_scenario_new_markup_cost = pd.to_numeric(df_scenario_all_items['Effective New Markup on Cost (%)'], errors='coerce').mean()
-                    avg_scenario_current_markup_map = pd.to_numeric(df_scenario_all_items['Effective Current Markup on MAP (%)'], errors='coerce').mean()
-                    avg_scenario_new_markup_map = pd.to_numeric(df_scenario_all_items['Effective New Markup on MAP (%)'], errors='coerce').mean()
-
-                    # --- Calculate Aggregated Average KPIs for Margins --- 
-                    avg_scenario_current_gross_margin = pd.to_numeric(df_scenario_all_items['Effective Current Margin (%)'], errors='coerce').mean()
-                    avg_scenario_new_gross_margin = pd.to_numeric(df_scenario_all_items['Effective New Margin (%)'], errors='coerce').mean()
-
-                    # --- Effective Rule Compliance --- 
-                    df_scenario_all_items['Effective Current Rule 1 Met'] = pd.NA
-                    df_scenario_all_items['Effective Current Rule 2 Met'] = pd.NA
-                    df_scenario_all_items['Effective Current Rule 3 Met'] = pd.NA
-                    df_scenario_all_items['Effective Current Overall Compliant Met'] = pd.NA
-                    df_scenario_all_items['Effective New Rule 1 Met'] = pd.NA
-                    df_scenario_all_items['Effective New Rule 2 Met'] = pd.NA
-                    df_scenario_all_items['Effective New Rule 3 Met'] = pd.NA
-                    df_scenario_all_items['Effective New Overall Compliant Met'] = pd.NA
-                    
-                    # b2c_mask_scenario and b2b_mask_scenario are already defined
-
-                    # Rule 1
-                    if 'Current RC Meets Rule 1' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Rule 1 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Meets Rule 1']
-                    if 'Current RC B2B Meets Rule 1' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Rule 1 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Meets Rule 1']
-                    if 'RC Meets Rule 1' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Rule 1 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Meets Rule 1']
-                    if 'RC B2B Meets Rule 1' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Rule 1 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Meets Rule 1']
-
-                    # Rule 2
-                    if 'Current RC Meets Rule 2' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Rule 2 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Meets Rule 2']
-                    if 'Current RC B2B Meets Rule 2' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Rule 2 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Meets Rule 2']
-                    if 'RC Meets Rule 2' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Rule 2 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Meets Rule 2']
-                    if 'RC B2B Meets Rule 2' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Rule 2 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Meets Rule 2']
-
-                    # Rule 3
-                    if 'Current RC Meets Rule 3' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Rule 3 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Meets Rule 3']
-                    if 'Current RC B2B Meets Rule 3' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Rule 3 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Meets Rule 3']
-                    if 'RC Meets Rule 3' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Rule 3 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Meets Rule 3']
-                    if 'RC B2B Meets Rule 3' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Rule 3 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Meets Rule 3']
-
-                    # Overall Compliant
-                    if 'Current RC Overall Compliant' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Overall Compliant Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Overall Compliant']
-                    if 'Current RC B2B Overall Compliant' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Overall Compliant Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Overall Compliant']
-                    if 'RC Overall Compliant' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Overall Compliant Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Overall Compliant']
-                    if 'RC B2B Overall Compliant' in df_scenario_all_items.columns:
-                        df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Overall Compliant Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Overall Compliant']
-
-                    # --- Calculate Aggregated Counts for Rule Compliance (Number of Trues) ---
-                    scenario_counts = {}
-                    rules_to_count = ['Rule 1', 'Rule 2', 'Rule 3', 'Overall Compliant']
-                    for rule_base_name in rules_to_count: 
-                        scenario_counts[f'Current {rule_base_name} Met'] = (df_scenario_all_items[f'Effective Current {rule_base_name} Met'] == True).sum()
-                        scenario_counts[f'New {rule_base_name} Met'] = (df_scenario_all_items[f'Effective New {rule_base_name} Met'] == True).sum()
-
-                    # Placeholder for displaying these KPIs and calculating Markups/Rules
-                    # st.info("KPIs de Márgenes y Markups calculados. Siguientes pasos: Cumplimiento de Reglas y visualización.") # This line will be replaced by the visualization code
-
-                    # --- Display Aggregated Scenario KPIs ---
-                    st.subheader("KPIs Agregados del Escenario")
-
-                    total_items_in_scenario = len(df_scenario_all_items)
-                    st.metric("Total de Productos en Escenario", f"{total_items_in_scenario:,}")
-
-                    # --- Financial KPIs ---
-                    kpi_cols_finance = st.columns(3)
-                    
-                    # Gross Margin (avg_scenario_current_gross_margin and avg_scenario_new_gross_margin assumed calculated in a previous step)
-                    # delta_gross_margin = avg_scenario_new_gross_margin - avg_scenario_current_gross_margin if pd.notna(avg_scenario_new_gross_margin) and pd.notna(avg_scenario_current_gross_margin) else None
-                    kpi_cols_finance[0].metric("Avg. Margen Bruto",
-                                               f"{avg_scenario_new_gross_margin:.2f}%" if pd.notna(avg_scenario_new_gross_margin) else "N/A",
-                                               delta=get_delta_string_for_metric(avg_scenario_new_gross_margin, avg_scenario_current_gross_margin, kind="percentage"),
-                                               help="Promedio del Margen Bruto ((Precio Efectivo - Costo) / Precio Efectivo) para todos los items del escenario. Delta vs. estado actual.")
-
-                    # Markup on Cost (avg_scenario_current_markup_cost and avg_scenario_new_markup_cost assumed calculated)
-                    # delta_markup_cost = avg_scenario_new_markup_cost - avg_scenario_current_markup_cost if pd.notna(avg_scenario_new_markup_cost) and pd.notna(avg_scenario_current_markup_cost) else None
-                    kpi_cols_finance[1].metric("Avg. Markup s/Costo",
-                                               f"{avg_scenario_new_markup_cost:.2f}%" if pd.notna(avg_scenario_new_markup_cost) else "N/A",
-                                               delta=get_delta_string_for_metric(avg_scenario_new_markup_cost, avg_scenario_current_markup_cost, kind="percentage"),
-                                               help="Promedio del Markup sobre Costo ((Precio Efectivo - Costo) / Costo) para todos los items del escenario. Delta vs. estado actual.")
-
-                    # Markup on MAP (avg_scenario_current_markup_map and avg_scenario_new_markup_map assumed calculated)
-                    # delta_markup_map = avg_scenario_new_markup_map - avg_scenario_current_markup_map if pd.notna(avg_scenario_new_markup_map) and pd.notna(avg_scenario_current_markup_map) else None
-                    kpi_cols_finance[2].metric("Avg. Markup s/MAP",
-                                               f"{avg_scenario_new_markup_map:.2f}%" if pd.notna(avg_scenario_new_markup_map) else "N/A",
-                                               delta=get_delta_string_for_metric(avg_scenario_new_markup_map, avg_scenario_current_markup_map, kind="percentage"),
-                                               help="Promedio del Markup sobre MAP ((Precio Efectivo - MAP) / MAP) para todos los items del escenario. Delta vs. estado actual.")
-
-                    st.markdown("---")
-                    st.markdown("##### Cumplimiento de Reglas (Cantidad de Productos)")
-
-                    # --- Rule Compliance KPIs (scenario_counts dictionary is assumed to be populated) ---
-                    kpi_cols_rules = st.columns(4)
-
-                    rules_display_names = {
-                        'Rule 1': 'Regla 1: vs Comp.',
-                        'Rule 2': 'Regla 2: vs MAP',
-                        'Rule 3': 'Regla 3: Margen', # Shortened
-                        'Overall Compliant': 'Cumplimiento General'
-                    }
-                    
-                    rule_keys_for_display = ['Rule 1', 'Rule 2', 'Rule 3', 'Overall Compliant']
-
-                    for i, rule_key in enumerate(rule_keys_for_display):
-                        current_met = scenario_counts.get(f'Current {rule_key} Met', 0)
-                        new_met = scenario_counts.get(f'New {rule_key} Met', 0)
-                        # Ensure delta calculation handles potential None from .get() if a key is missing, though defaulting to 0 helps
-                        # delta_met = new_met - current_met 
-                        kpi_cols_rules[i].metric(f"{rules_display_names[rule_key]} Met",
-                                                  f"{new_met:,}", # Format as integer with comma
-                                                  delta=get_delta_string_for_metric(new_met, current_met, kind="count")) # Format with sign
-
-            # Moved the message for empty scenario here, so it appears if the expander is not shown
-            if not st.session_state.staged_scenario_items: 
-                st.info("No hay productos en el escenario. Añade productos desde las vistas previas B2C o B2B.")
-            # Display each staged lot (moved below the aggregated KPIs expander)
-            if st.session_state.staged_scenario_items:           
-                # Button to clear the entire scenario
-                if st.button("🗑️ Limpiar Todo el Escenario", key="clear_scenario"):
-                    st.session_state.staged_scenario_items = []
-                    st.session_state.staged_scenario_kpis = {}
-                    st.rerun() # Rerun to reflect the cleared state immediately
-                
-                # Display each staged lot
-                scenario_df_list = [] # To collect all DFs for aggregated KPIs
-                for i, lot_df in enumerate(st.session_state.staged_scenario_items):
-                    lot_type = lot_df['Scenario Type'].iloc[0] if not lot_df.empty and 'Scenario Type' in lot_df.columns else 'N/A'
-                    applied_discount = lot_df['Applied Discount (%)'].iloc[0] if not lot_df.empty and 'Applied Discount (%)' in lot_df.columns else 'N/A'
-                    
-                    # Define columns to display based on lot_type
-                    if lot_type == 'B2C':
-                        original_price_col_name = RC_PRICE_COLUMN
-                        new_price_col_name = 'New RC Price'
-                        current_margin_col_name = 'Current RC Margin (%)'
-                        new_margin_col_name = 'New RC Margin (%)'
-                        rule_cols_original = b2c_original_rule_cols
-                        rule_cols_display_names = b2c_display_rule_names
-                        base_cols_scenario = base_cols_b2c # Includes SKU, Item Name, Year/Model
-                    elif lot_type == 'B2B':
-                        original_price_col_name = RC_B2B_PRICE_COLUMN
-                        new_price_col_name = 'New RC B2B Price'
-                        current_margin_col_name = 'Current RC B2B Margin (%)'
-                        new_margin_col_name = 'New RC B2B Margin (%)'
-                        rule_cols_original = b2b_original_rule_cols
-                        rule_cols_display_names = b2b_display_rule_names
-                        base_cols_scenario = base_cols_b2b # Includes SKU, Item Name, Year/Model
+                        else:
+                            st.info("No B2B simulation data to display based on current selections and applied discounts")
                     else:
-                        # Default to B2C if type is N/A or unexpected
-                        original_price_col_name = RC_PRICE_COLUMN
-                        new_price_col_name = 'New RC Price'
-                        current_margin_col_name = 'Current RC Margin (%)'
-                        new_margin_col_name = 'New RC Margin (%)'
-                        rule_cols_original = b2c_original_rule_cols
-                        rule_cols_display_names = b2c_display_rule_names
-                        base_cols_scenario = base_cols_b2c
-
-                    columns_for_scenario_lot_display = []
-                    if all(col in lot_df.columns for col in base_cols_scenario):
-                         columns_for_scenario_lot_display.extend(base_cols_scenario)
-                    
-                    # Add price and margin columns if they exist
-                    price_margin_cols = [
-                        original_price_col_name, current_margin_col_name, 
-                        new_price_col_name, new_margin_col_name
-                    ]
-                    for col in price_margin_cols:
-                        if col in lot_df.columns:
-                            columns_for_scenario_lot_display.append(col)
-
-                    # Add rule columns
-                    for rule_col in rule_cols_original:
-                        if rule_col in lot_df.columns:
-                            columns_for_scenario_lot_display.append(rule_col)
+                        st.info("No B2B simulation data to display based on current selections and applied discounts")
+            else:
+                st.info("No products match the current sidebar filters. Please adjust sidebar filters to populate products for simulation.")
                             
-                    # Add reference price columns (common for B2C/B2B context in scenario)
-                    reference_cols = ['Min B2C Competitor Price', 'Min B2B Competitor Price', 'MAP', 'Unit Cost']                    
-                    for col in reference_cols:
-                        if col in lot_df.columns and col not in columns_for_scenario_lot_display:
-                            columns_for_scenario_lot_display.append(col)
-                            
-                    # Add discount and type
-                    if 'Applied Discount (%)' in lot_df.columns:
-                        columns_for_scenario_lot_display.append('Applied Discount (%)')
-                    if 'Scenario Type' in lot_df.columns:
-                         columns_for_scenario_lot_display.append('Scenario Type')
-                    
-                    # Ensure no duplicates and preserve order as much as possible
-                    seen_scenario_lot_cols = set()
-                    unique_cols_for_scenario_lot_display = [x for x in columns_for_scenario_lot_display if not (x in seen_scenario_lot_cols or seen_scenario_lot_cols.add(x))]
-                    
-                    df_display_lot = lot_df[unique_cols_for_scenario_lot_display].copy() # Work with a copy
-                    
-                    with st.expander(f"Lote {i+1}: {lot_type} ({len(df_display_lot)} productos) con {applied_discount}% de descuento", expanded=False):
-                        styler_lot = format_and_style_rules_df(df_display_lot, [col for col in rule_cols_original if col in df_display_lot.columns])
-                        
-                        column_config_lot = {original: st.column_config.TextColumn(new_display_name) 
-                                           for original, new_display_name in zip(rule_cols_original, rule_cols_display_names) 
-                                           if original in df_display_lot.columns}
-                        
-                        # Add specific formatting for other columns, checking existence
-                        if new_price_col_name in df_display_lot.columns:
-                            column_config_lot[new_price_col_name] = st.column_config.NumberColumn("New Price (after discount)", format="%.2f")
-                        if original_price_col_name in df_display_lot.columns:
-                            column_config_lot[original_price_col_name] = st.column_config.NumberColumn("Original Price", format="%.2f")
-                        if current_margin_col_name in df_display_lot.columns:
-                            column_config_lot[current_margin_col_name] = st.column_config.NumberColumn("Current Margin", format="%.2f%%")
-                        if new_margin_col_name in df_display_lot.columns:
-                            column_config_lot[new_margin_col_name] = st.column_config.NumberColumn("New Margin", format="%.2f%%")
-                        if 'Min B2C Competitor Price' in df_display_lot.columns:
-                            column_config_lot['Min B2C Competitor Price'] = st.column_config.NumberColumn(format="%.2f")
-                        if 'Min B2B Competitor Price' in df_display_lot.columns:
-                             column_config_lot['Min B2B Competitor Price'] = st.column_config.NumberColumn(format="%.2f")
-                        if 'MAP' in df_display_lot.columns:
-                            column_config_lot['MAP'] = st.column_config.NumberColumn(format="%.2f")
-                        if 'Unit Cost' in df_display_lot.columns:
-                            column_config_lot['Unit Cost'] = st.column_config.NumberColumn(format="%.2f")
-                        if 'Applied Discount (%)' in df_display_lot.columns:
-                            column_config_lot['Applied Discount (%)'] = st.column_config.NumberColumn(format="%.1f%%")
+        # --- Consolidated Scenario Analysis Section ---
+        st.markdown("--- ") # Visual Separator
+        st.header("📊 Análisis de Escenario Consolidado")
+        st.caption("Aquí se muestran los productos que has añadido al escenario con sus respectivos descuentos aplicados. Puedes eliminar lotes individualmente o limpiar todo el escenario.")
 
-                        st.dataframe(styler_lot, use_container_width=True, hide_index=True, column_config=column_config_lot)
+        # --- KPIs Consolidados del Escenario ---
+        if st.session_state.staged_scenario_items: # Only show if there are items
+            with st.expander("📊 KPIs Agregados del Escenario Completo", expanded=True):
+                df_scenario_all_items = pd.concat(st.session_state.staged_scenario_items, ignore_index=True).copy()
+
+                cost_col = 'Unit Cost'
+                
+                # Initialize Effective Columns
+                df_scenario_all_items['Effective Current Price'] = pd.NA
+                df_scenario_all_items['Effective New Price'] = pd.NA
+                df_scenario_all_items['Effective Current Margin (%)'] = pd.NA
+                df_scenario_all_items['Effective New Margin (%)'] = pd.NA
+
+                b2c_mask_scenario = df_scenario_all_items['Scenario Type'] == 'B2C'
+                b2b_mask_scenario = df_scenario_all_items['Scenario Type'] == 'B2B'
+
+                # --- Effective Current Price ---
+                if RC_PRICE_COLUMN in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Price'] = df_scenario_all_items.loc[b2c_mask_scenario, RC_PRICE_COLUMN]
+                if RC_B2B_PRICE_COLUMN in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Price'] = df_scenario_all_items.loc[b2b_mask_scenario, RC_B2B_PRICE_COLUMN]
+
+                # --- Effective New Price ---
+                if 'New RC Price' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Price'] = df_scenario_all_items.loc[b2c_mask_scenario, 'New RC Price']
+                if 'New RC B2B Price' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Price'] = df_scenario_all_items.loc[b2b_mask_scenario, 'New RC B2B Price']
+
+                # --- Effective Margins ---
+                if cost_col in df_scenario_all_items.columns:
+                    numeric_cost_scenario = pd.to_numeric(df_scenario_all_items[cost_col], errors='coerce')
+                    cost_is_valid_mask_scenario = numeric_cost_scenario.notna()
+
+                    # Effective Current Margin
+                    current_price_eff = pd.to_numeric(df_scenario_all_items['Effective Current Price'], errors='coerce')
+                    current_price_valid_eff = current_price_eff.notna() & (current_price_eff != 0)
+                    final_current_margin_mask_eff = cost_is_valid_mask_scenario & current_price_valid_eff
+                    if final_current_margin_mask_eff.any():
+                        df_scenario_all_items.loc[final_current_margin_mask_eff, 'Effective Current Margin (%)'] = \
+                            ((current_price_eff[final_current_margin_mask_eff] - numeric_cost_scenario[final_current_margin_mask_eff]) / current_price_eff[final_current_margin_mask_eff]) * 100
+
+                    # Effective New Margin
+                    new_price_eff = pd.to_numeric(df_scenario_all_items['Effective New Price'], errors='coerce')
+                    new_price_valid_eff = new_price_eff.notna() & (new_price_eff != 0)
+                    final_new_margin_mask_eff = cost_is_valid_mask_scenario & new_price_valid_eff
+                    if final_new_margin_mask_eff.any():
+                        df_scenario_all_items.loc[final_new_margin_mask_eff, 'Effective New Margin (%)'] = \
+                            ((new_price_eff[final_new_margin_mask_eff] - numeric_cost_scenario[final_new_margin_mask_eff]) / new_price_eff[final_new_margin_mask_eff]) * 100
+                
+                # --- Effective Markups ---
+                map_col = 'MAP' # Ensure map_col is defined
+                df_scenario_all_items['Effective Current Markup on Cost (%)'] = pd.NA
+                df_scenario_all_items['Effective New Markup on Cost (%)'] = pd.NA
+                df_scenario_all_items['Effective Current Markup on MAP (%)'] = pd.NA
+                df_scenario_all_items['Effective New Markup on MAP (%)'] = pd.NA
+
+                if cost_col in df_scenario_all_items.columns:
+                    numeric_cost_scenario = pd.to_numeric(df_scenario_all_items[cost_col], errors='coerce')
+                    cost_is_valid_and_nonzero_scenario = numeric_cost_scenario.notna() & (numeric_cost_scenario != 0)
+
+                    # Effective Current Markup on Cost
+                    current_price_eff = pd.to_numeric(df_scenario_all_items['Effective Current Price'], errors='coerce')
+                    current_price_valid_eff_markup_cost = current_price_eff.notna() & cost_is_valid_and_nonzero_scenario
+                    if current_price_valid_eff_markup_cost.any():
+                        df_scenario_all_items.loc[current_price_valid_eff_markup_cost, 'Effective Current Markup on Cost (%)'] = \
+                            ((current_price_eff[current_price_valid_eff_markup_cost] - numeric_cost_scenario[current_price_valid_eff_markup_cost]) / numeric_cost_scenario[current_price_valid_eff_markup_cost]) * 100
+
+                    # Effective New Markup on Cost
+                    new_price_eff = pd.to_numeric(df_scenario_all_items['Effective New Price'], errors='coerce')
+                    new_price_valid_eff_markup_cost = new_price_eff.notna() & cost_is_valid_and_nonzero_scenario
+                    if new_price_valid_eff_markup_cost.any():
+                        df_scenario_all_items.loc[new_price_valid_eff_markup_cost, 'Effective New Markup on Cost (%)'] = \
+                            ((new_price_eff[new_price_valid_eff_markup_cost] - numeric_cost_scenario[new_price_valid_eff_markup_cost]) / numeric_cost_scenario[new_price_valid_eff_markup_cost]) * 100
+
+                if map_col in df_scenario_all_items.columns:
+                    numeric_map_scenario = pd.to_numeric(df_scenario_all_items[map_col], errors='coerce')
+                    map_is_valid_and_nonzero_scenario = numeric_map_scenario.notna() & (numeric_map_scenario != 0)
+
+                    # Effective Current Markup on MAP
+                    current_price_eff_map = pd.to_numeric(df_scenario_all_items['Effective Current Price'], errors='coerce') # Re-fetch to avoid altering current_price_eff used for cost markup
+                    current_price_valid_eff_markup_map = current_price_eff_map.notna() & map_is_valid_and_nonzero_scenario
+                    if current_price_valid_eff_markup_map.any():
+                        df_scenario_all_items.loc[current_price_valid_eff_markup_map, 'Effective Current Markup on MAP (%)'] = \
+                            ((current_price_eff_map[current_price_valid_eff_markup_map] - numeric_map_scenario[current_price_valid_eff_markup_map]) / numeric_map_scenario[current_price_valid_eff_markup_map]) * 100
+
+                    # Effective New Markup on MAP
+                    new_price_eff_map = pd.to_numeric(df_scenario_all_items['Effective New Price'], errors='coerce') # Re-fetch
+                    new_price_valid_eff_markup_map = new_price_eff_map.notna() & map_is_valid_and_nonzero_scenario
+                    if new_price_valid_eff_markup_map.any():
+                        df_scenario_all_items.loc[new_price_valid_eff_markup_map, 'Effective New Markup on MAP (%)'] = \
+                            ((new_price_eff_map[new_price_valid_eff_markup_map] - numeric_map_scenario[new_price_valid_eff_markup_map]) / numeric_map_scenario[new_price_valid_eff_markup_map]) * 100
+
+                # --- Calculate Aggregated Average KPIs for Markups ---
+                avg_scenario_current_markup_cost = pd.to_numeric(df_scenario_all_items['Effective Current Markup on Cost (%)'], errors='coerce').mean()
+                avg_scenario_new_markup_cost = pd.to_numeric(df_scenario_all_items['Effective New Markup on Cost (%)'], errors='coerce').mean()
+                avg_scenario_current_markup_map = pd.to_numeric(df_scenario_all_items['Effective Current Markup on MAP (%)'], errors='coerce').mean()
+                avg_scenario_new_markup_map = pd.to_numeric(df_scenario_all_items['Effective New Markup on MAP (%)'], errors='coerce').mean()
+
+                # --- Calculate Aggregated Average KPIs for Margins --- 
+                avg_scenario_current_gross_margin = pd.to_numeric(df_scenario_all_items['Effective Current Margin (%)'], errors='coerce').mean()
+                avg_scenario_new_gross_margin = pd.to_numeric(df_scenario_all_items['Effective New Margin (%)'], errors='coerce').mean()
+
+                # --- Effective Rule Compliance --- 
+                df_scenario_all_items['Effective Current Rule 1 Met'] = pd.NA
+                df_scenario_all_items['Effective Current Rule 2 Met'] = pd.NA
+                df_scenario_all_items['Effective Current Rule 3 Met'] = pd.NA
+                df_scenario_all_items['Effective Current Overall Compliant Met'] = pd.NA
+                df_scenario_all_items['Effective New Rule 1 Met'] = pd.NA
+                df_scenario_all_items['Effective New Rule 2 Met'] = pd.NA
+                df_scenario_all_items['Effective New Rule 3 Met'] = pd.NA
+                df_scenario_all_items['Effective New Overall Compliant Met'] = pd.NA
+                
+                # b2c_mask_scenario and b2b_mask_scenario are already defined
+
+                # Rule 1
+                if 'Current RC Meets Rule 1' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Rule 1 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Meets Rule 1']
+                if 'Current RC B2B Meets Rule 1' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Rule 1 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Meets Rule 1']
+                if 'RC Meets Rule 1' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Rule 1 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Meets Rule 1']
+                if 'RC B2B Meets Rule 1' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Rule 1 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Meets Rule 1']
+
+                # Rule 2
+                if 'Current RC Meets Rule 2' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Rule 2 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Meets Rule 2']
+                if 'Current RC B2B Meets Rule 2' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Rule 2 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Meets Rule 2']
+                if 'RC Meets Rule 2' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Rule 2 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Meets Rule 2']
+                if 'RC B2B Meets Rule 2' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Rule 2 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Meets Rule 2']
+
+                # Rule 3
+                if 'Current RC Meets Rule 3' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Rule 3 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Meets Rule 3']
+                if 'Current RC B2B Meets Rule 3' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Rule 3 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Meets Rule 3']
+                if 'RC Meets Rule 3' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Rule 3 Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Meets Rule 3']
+                if 'RC B2B Meets Rule 3' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Rule 3 Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Meets Rule 3']
+
+                # Overall Compliant
+                if 'Current RC Overall Compliant' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective Current Overall Compliant Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'Current RC Overall Compliant']
+                if 'Current RC B2B Overall Compliant' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective Current Overall Compliant Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'Current RC B2B Overall Compliant']
+                if 'RC Overall Compliant' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2c_mask_scenario, 'Effective New Overall Compliant Met'] = df_scenario_all_items.loc[b2c_mask_scenario, 'RC Overall Compliant']
+                if 'RC B2B Overall Compliant' in df_scenario_all_items.columns:
+                    df_scenario_all_items.loc[b2b_mask_scenario, 'Effective New Overall Compliant Met'] = df_scenario_all_items.loc[b2b_mask_scenario, 'RC B2B Overall Compliant']
+
+                # --- Calculate Aggregated Counts for Rule Compliance (Number of Trues) ---
+                scenario_counts = {}
+                rules_to_count = ['Rule 1', 'Rule 2', 'Rule 3', 'Overall Compliant']
+                for rule_base_name in rules_to_count: 
+                    scenario_counts[f'Current {rule_base_name} Met'] = (df_scenario_all_items[f'Effective Current {rule_base_name} Met'] == True).sum()
+                    scenario_counts[f'New {rule_base_name} Met'] = (df_scenario_all_items[f'Effective New {rule_base_name} Met'] == True).sum()
+
+                # --- Display Aggregated Scenario KPIs ---
+                st.subheader("KPIs Agregados del Escenario")
+
+                total_items_in_scenario = len(df_scenario_all_items)
+                st.metric("Total de Productos en Escenario", f"{total_items_in_scenario:,}")
+
+                # --- Financial KPIs ---
+                kpi_cols_finance = st.columns(3)
+                
+                kpi_cols_finance[0].metric("Avg. Margen Bruto",
+                                           f"{avg_scenario_new_gross_margin:.2f}%" if pd.notna(avg_scenario_new_gross_margin) else "N/A",
+                                           delta=get_delta_string_for_metric(avg_scenario_new_gross_margin, avg_scenario_current_gross_margin, kind="percentage"),
+                                           help="Promedio del Margen Bruto ((Precio Efectivo - Costo) / Precio Efectivo) para todos los items del escenario. Delta vs. estado actual.")
+
+                kpi_cols_finance[1].metric("Avg. Markup s/Costo",
+                                           f"{avg_scenario_new_markup_cost:.2f}%" if pd.notna(avg_scenario_new_markup_cost) else "N/A",
+                                           delta=get_delta_string_for_metric(avg_scenario_new_markup_cost, avg_scenario_current_markup_cost, kind="percentage"),
+                                           help="Promedio del Markup sobre Costo ((Precio Efectivo - Costo) / Costo) para todos los items del escenario. Delta vs. estado actual.")
+
+                kpi_cols_finance[2].metric("Avg. Markup s/MAP",
+                                           f"{avg_scenario_new_markup_map:.2f}%" if pd.notna(avg_scenario_new_markup_map) else "N/A",
+                                           delta=get_delta_string_for_metric(avg_scenario_new_markup_map, avg_scenario_current_markup_map, kind="percentage"),
+                                           help="Promedio del Markup sobre MAP ((Precio Efectivo - MAP) / MAP) para todos los items del escenario. Delta vs. estado actual.")
+
+                st.markdown("---")
+                st.markdown("##### Cumplimiento de Reglas (Cantidad de Productos)")
+
+                # --- Rule Compliance KPIs ---
+                kpi_cols_rules = st.columns(4)
+
+                rules_display_names = {
+                    'Rule 1': 'Regla 1: vs Comp.',
+                    'Rule 2': 'Regla 2: vs MAP',
+                    'Rule 3': 'Regla 3: Margen',
+                    'Overall Compliant': 'Cumplimiento General'
+                }
+                
+                rule_keys_for_display = ['Rule 1', 'Rule 2', 'Rule 3', 'Overall Compliant']
+
+                for i, rule_key in enumerate(rule_keys_for_display):
+                    current_met = scenario_counts.get(f'Current {rule_key} Met', 0)
+                    new_met = scenario_counts.get(f'New {rule_key} Met', 0)
+                    kpi_cols_rules[i].metric(f"{rules_display_names[rule_key]} Met",
+                                              f"{new_met:,}",
+                                              delta=get_delta_string_for_metric(new_met, current_met, kind="count"))
+
+        # Moved the message for empty scenario here, so it appears if the expander is not shown
+        if not st.session_state.staged_scenario_items: 
+            st.info("No hay productos en el escenario. Añade productos desde las vistas previas B2C o B2B.")
+        # Display each staged lot (moved below the aggregated KPIs expander)
+        if st.session_state.staged_scenario_items:           
+            # Button to clear the entire scenario
+            if st.button("🗑️ Limpiar Todo el Escenario", key="clear_scenario"):
+                st.session_state.staged_scenario_items = []
+                st.session_state.staged_scenario_kpis = {}
+                st.rerun() # Rerun to reflect the cleared state immediately
+            
+            # Display each staged lot
+            scenario_df_list = [] # To collect all DFs for aggregated KPIs
+            for i, lot_df in enumerate(st.session_state.staged_scenario_items):
+                lot_type = lot_df['Scenario Type'].iloc[0] if not lot_df.empty and 'Scenario Type' in lot_df.columns else 'N/A'
+                applied_discount = lot_df['Applied Discount (%)'].iloc[0] if not lot_df.empty and 'Applied Discount (%)' in lot_df.columns else 'N/A'
+                
+                # Define columns to display based on lot_type
+                if lot_type == 'B2C':
+                    original_price_col_name = RC_PRICE_COLUMN
+                    new_price_col_name = 'New RC Price'
+                    current_margin_col_name = 'Current RC Margin (%)'
+                    new_margin_col_name = 'New RC Margin (%)'
+                    rule_cols_original = b2c_original_rule_cols
+                    rule_cols_display_names = b2c_display_rule_names
+                    base_cols_scenario = base_cols_b2c # Includes SKU, Item Name, Year/Model
+                elif lot_type == 'B2B':
+                    original_price_col_name = RC_B2B_PRICE_COLUMN
+                    new_price_col_name = 'New RC B2B Price'
+                    current_margin_col_name = 'Current RC B2B Margin (%)'
+                    new_margin_col_name = 'New RC B2B Margin (%)'
+                    rule_cols_original = b2b_original_rule_cols
+                    rule_cols_display_names = b2b_display_rule_names
+                    base_cols_scenario = base_cols_b2b # Includes SKU, Item Name, Year/Model
+                else:
+                    # Default to B2C if type is N/A or unexpected
+                    original_price_col_name = RC_PRICE_COLUMN
+                    new_price_col_name = 'New RC Price'
+                    current_margin_col_name = 'Current RC Margin (%)'
+                    new_margin_col_name = 'New RC Margin (%)'
+                    rule_cols_original = b2c_original_rule_cols
+                    rule_cols_display_names = b2c_display_rule_names
+                    base_cols_scenario = base_cols_b2c
+
+                columns_for_scenario_lot_display = []
+                if all(col in lot_df.columns for col in base_cols_scenario):
+                     columns_for_scenario_lot_display.extend(base_cols_scenario)
+                
+                # Add price and margin columns if they exist
+                price_margin_cols = [
+                    original_price_col_name, current_margin_col_name, 
+                    new_price_col_name, new_margin_col_name
+                ]
+                for col in price_margin_cols:
+                    if col in lot_df.columns:
+                        columns_for_scenario_lot_display.append(col)
+
+                # Add rule columns
+                for rule_col in rule_cols_original:
+                    if rule_col in lot_df.columns:
+                        columns_for_scenario_lot_display.append(rule_col)
                         
-                        if st.button(f"Eliminar Lote {i+1}", key=f"delete_lot_{i}"):
-                            st.session_state.staged_scenario_items.pop(i)
-                            st.rerun() # Rerun to update the display
-                    scenario_df_list.append(lot_df)
+                # Add reference price columns (common for B2C/B2B context in scenario)
+                reference_cols = ['Min B2C Competitor Price', 'Min B2B Competitor Price', 'MAP', 'Unit Cost']                    
+                for col in reference_cols:
+                    if col in lot_df.columns and col not in columns_for_scenario_lot_display:
+                        columns_for_scenario_lot_display.append(col)
+                        
+                # Add discount and type
+                if 'Applied Discount (%)' in lot_df.columns:
+                    columns_for_scenario_lot_display.append('Applied Discount (%)')
+                if 'Scenario Type' in lot_df.columns:
+                     columns_for_scenario_lot_display.append('Scenario Type')
+                
+                # Ensure no duplicates and preserve order as much as possible
+                seen_scenario_lot_cols = set()
+                unique_cols_for_scenario_lot_display = [x for x in columns_for_scenario_lot_display if not (x in seen_scenario_lot_cols or seen_scenario_lot_cols.add(x))]
+                
+                df_display_lot = lot_df[unique_cols_for_scenario_lot_display].copy() # Work with a copy
+                
+                with st.expander(f"Lote {i+1}: {lot_type} ({len(df_display_lot)} productos) con {applied_discount}% de descuento", expanded=False):
+                    styler_lot = format_and_style_rules_df(df_display_lot, [col for col in rule_cols_original if col in df_display_lot.columns])
+                    
+                    column_config_lot = {original: st.column_config.TextColumn(new_display_name) 
+                                       for original, new_display_name in zip(rule_cols_original, rule_cols_display_names) 
+                                       if original in df_display_lot.columns}
+                    
+                    # Add specific formatting for other columns, checking existence
+                    if new_price_col_name in df_display_lot.columns:
+                        column_config_lot[new_price_col_name] = st.column_config.NumberColumn("New Price (after discount)", format="%.2f")
+                    if original_price_col_name in df_display_lot.columns:
+                        column_config_lot[original_price_col_name] = st.column_config.NumberColumn("Original Price", format="%.2f")
+                    if current_margin_col_name in df_display_lot.columns:
+                        column_config_lot[current_margin_col_name] = st.column_config.NumberColumn("Current Margin", format="%.2f%%")
+                    if new_margin_col_name in df_display_lot.columns:
+                        column_config_lot[new_margin_col_name] = st.column_config.NumberColumn("New Margin", format="%.2f%%")
+                    if 'Min B2C Competitor Price' in df_display_lot.columns:
+                        column_config_lot['Min B2C Competitor Price'] = st.column_config.NumberColumn(format="%.2f")
+                    if 'Min B2B Competitor Price' in df_display_lot.columns:
+                         column_config_lot['Min B2B Competitor Price'] = st.column_config.NumberColumn(format="%.2f")
+                    if 'MAP' in df_display_lot.columns:
+                        column_config_lot['MAP'] = st.column_config.NumberColumn(format="%.2f")
+                    if 'Unit Cost' in df_display_lot.columns:
+                        column_config_lot['Unit Cost'] = st.column_config.NumberColumn(format="%.2f")
+                    if 'Applied Discount (%)' in df_display_lot.columns:
+                        column_config_lot['Applied Discount (%)'] = st.column_config.NumberColumn(format="%.1f%%")
+
+                    st.dataframe(styler_lot, use_container_width=True, hide_index=True, column_config=column_config_lot)
+                    
+                    if st.button(f"Eliminar Lote {i+1}", key=f"delete_lot_{i}"):
+                        st.session_state.staged_scenario_items.pop(i)
+                        st.rerun() # Rerun to update the display
+                scenario_df_list.append(lot_df)
 
                 # --- Calculate and Display Aggregated KPIs for the Scenario ---     
 
