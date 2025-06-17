@@ -51,24 +51,26 @@ def fetch_data(_gc: gspread.Client):
 
         records = worksheet.get_all_records(head=1) # Assumes header is on row 1
         df = pd.DataFrame(records)
+        
+        # Add debugging information
+        initial_row_count = len(df)
+        st.info(f"🔍 Debug: Loaded {initial_row_count} rows from Google Sheets")
+        
         # --- Ensure 'Year/Model' is present as a column (if not, try to add as empty) ---
         if 'Year/Model' not in df.columns:
             df['Year/Model'] = pd.NA
-        # Basic data cleaning: Replace empty strings with NaN, attempt numeric conversion
-        df.replace('', pd.NA, inplace=True) # B: Converts empty strings to pd.NA globally.
-                                            # If 'Year/Model' had empty strings, they become pd.NA.
+            
+        # Simplified data cleaning - be more conservative about what we convert to NaN
+        # Only replace truly empty strings, not spaces or other values
+        df = df.replace(r'^\s*$', pd.NA, regex=True)  # Only replace empty or whitespace-only strings
+        
+        rows_after_cleanup = len(df)
+        st.info(f"🔍 Debug: After basic cleanup: {rows_after_cleanup} rows (lost: {initial_row_count - rows_after_cleanup})")
 
-        # Convert 'Year/Model' to string type for consistent filtering
+        # Convert 'Year/Model' to string type for consistent filtering - simplified approach
         if 'Year/Model' in df.columns:
             df['Year/Model'] = df['Year/Model'].astype(str)
-            # Replace the string '<NA>' (which results from pd.NA.astype(str)) back to pd.NA
-            # if you want to treat them as actual missing values for other purposes
-            # or for cleaner display in filter options if desired.
-            # For the current filtering mechanism, leaving them as "<NA>" is also fine
-            # as get_unique_options_sim will also treat it as a string option.
-            # Let's convert "<NA>" string back to pd.NA for general data consistency, 
-            # get_unique_options_sim will handle it by converting to string again for options if NA exists.
-            df.loc[df['Year/Model'] == '<NA>', 'Year/Model'] = pd.NA
+            # Keep NaN values as "nan" strings for now - they'll be handled in the filter function
 
         for col in df.columns: # C: This loop handles numeric/percentage conversions for other columns.
                                # 'Year/Model' is not in numeric_cols or percentage_cols, so it's skipped.
@@ -85,10 +87,10 @@ def fetch_data(_gc: gspread.Client):
                  if df[col].dtype == 'object':
                     # Store original Series temporarily
                     original_series = df[col].astype(str)
-                    # Remove symbols
+                    # Remove symbols but be more conservative - don't replace everything
                     cleaned_series = original_series.str.replace(r'[$,%]', '', regex=True).str.strip()
-                    # Handle potential empty strings after cleaning -> NaN
-                    cleaned_series.replace('', pd.NA, inplace=True)
+                    # Only replace truly empty strings after cleaning
+                    cleaned_series = cleaned_series.replace(r'^\s*$', pd.NA, regex=True)
                     # Convert to numeric
                     numeric_series = pd.to_numeric(cleaned_series, errors='coerce')
                     
@@ -104,6 +106,9 @@ def fetch_data(_gc: gspread.Client):
                     st.info(f"Column '{col}' seems to be numeric percentage > 1, dividing by 100.")
                     df[col] = df[col] / 100.0
         # else: keep non-numeric, non-percentage columns as they are
+        
+        final_row_count = len(df)
+        st.info(f"🔍 Debug: After numeric processing: {final_row_count} rows (lost: {initial_row_count - final_row_count})")
                 
         return df
     except gspread.exceptions.APIError as e:
@@ -114,10 +119,18 @@ def fetch_data(_gc: gspread.Client):
         return pd.DataFrame()
 
 # Helper function to get unique sorted options for dashboard filters
-def get_unique_options_dashboard(df_source, column_name): # Modified to take df_source
+def get_unique_options_dashboard(df_source, column_name):
+    """Get unique sorted options for filter dropdowns, properly handling NaN values"""
     if column_name not in df_source.columns:
         return []
-    return sorted(df_source[column_name].astype(str).unique())
+    
+    # Get unique values, excluding NaN
+    unique_values = df_source[column_name].dropna().unique()
+    
+    # Convert to string for display, then sort
+    unique_strings = [str(val) for val in unique_values if pd.notna(val)]
+    
+    return sorted(unique_strings)
 
 # --- Streamlit App ---
 st.set_page_config(layout="wide", page_title="Pricing & Competition Dashboard")
@@ -150,6 +163,21 @@ else:
 
         # --- Sidebar Filters (for Dashboard Overview tab) ---
         st.sidebar.header("Dashboard Filters")
+        
+        # Filter summary and clear button
+        if st.sidebar.button("🗑️ Clear All Filters", help="Reset all filters to default state"):
+            # Clear all filter session state keys
+            filter_keys = [
+                "dashboard_ean", "dashboard_sku", "dashboard_item_name",
+                "dashboard_brands", "dashboard_sports", "dashboard_type1s", 
+                "dashboard_year_models", "dashboard_cooccurrence"
+            ]
+            for key in filter_keys:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+        
+        st.sidebar.divider()
 
         # EAN Filter
         ean_search = st.sidebar.text_input("Search by EAN:", placeholder="Enter EAN...", key="dashboard_ean")
@@ -161,54 +189,147 @@ else:
         search_term = st.sidebar.text_input("Search by Item Name:", placeholder="Enter item name...", key="dashboard_item_name")
 
         # Categorical Filters
-        brands_options_dashboard = sorted(df["BRAND"].unique())
-        brands_dashboard = st.sidebar.multiselect(
-            "Select Brand(s):",
-            options=brands_options_dashboard,
-            key="dashboard_brands"
-        )
+        # Check if required columns exist before creating filters
+        if 'BRAND' in df.columns:
+            brands_options_dashboard = get_unique_options_dashboard(df, "BRAND")
+            brands_dashboard = st.sidebar.multiselect(
+                "Select Brand(s):",
+                options=brands_options_dashboard,
+                key="dashboard_brands"
+            )
+        else:
+            brands_dashboard = []
+            st.sidebar.warning("BRAND column not found in data")
 
-        sports_options_dashboard = get_unique_options_dashboard(df, "SPORT")
-        sports_dashboard = st.sidebar.multiselect(
-            "Select Sport(s):",
-            options=sports_options_dashboard,
-            key="dashboard_sports"
-        )
+        if 'SPORT' in df.columns:
+            sports_options_dashboard = get_unique_options_dashboard(df, "SPORT")
+            sports_dashboard = st.sidebar.multiselect(
+                "Select Sport(s):",
+                options=sports_options_dashboard,
+                key="dashboard_sports"
+            )
+        else:
+            sports_dashboard = []
+            st.sidebar.warning("SPORT column not found in data")
 
-        type1_options_dashboard = get_unique_options_dashboard(df, "TYPE1")
-        type1s_dashboard = st.sidebar.multiselect(
-            "Select Type1(s):",
-            options=type1_options_dashboard,
-            key="dashboard_type1s"
-        )
+        if 'TYPE1' in df.columns:
+            type1_options_dashboard = get_unique_options_dashboard(df, "TYPE1")
+            type1s_dashboard = st.sidebar.multiselect(
+                "Select Type1(s):",
+                options=type1_options_dashboard,
+                key="dashboard_type1s"
+            )
+        else:
+            type1s_dashboard = []
+            st.sidebar.warning("TYPE1 column not found in data")
         
-        year_model_options_dashboard = get_unique_options_dashboard(df, "Year/Model")
-        year_models_dashboard = st.sidebar.multiselect(
-            "Select Year/Model(s):",
-            options=year_model_options_dashboard,
-            key="dashboard_year_models"
-        )
+        if 'Year/Model' in df.columns:
+            year_model_options_dashboard = get_unique_options_dashboard(df, "Year/Model")
+            year_models_dashboard = st.sidebar.multiselect(
+                "Select Year/Model(s):",
+                options=year_model_options_dashboard,
+                key="dashboard_year_models"
+            )
+        else:
+            year_models_dashboard = []
+            st.sidebar.warning("Year/Model column not found in data")
         
         selected_competitors_for_coccurrence_filter = st.sidebar.multiselect(
             "Show Products Priced by RC & Selected Competitor(s):",
-            options=ALL_COMPETITOR_COLUMNS,
+            options=[col for col in ALL_COMPETITOR_COLUMNS if col in df.columns],
             help="Filters data to show only products where Racket Central AND at least one of the selected competitors have a price.",
             key="dashboard_cooccurrence"
         )
 
         # Apply Categorical Filters
-        if not brands_dashboard: brands_dashboard = df["BRAND"].unique()
-        if not sports_dashboard: sports_dashboard = get_unique_options_dashboard(df, "SPORT") # Use all if empty
-        if not type1s_dashboard: type1s_dashboard = get_unique_options_dashboard(df, "TYPE1") # Use all if empty
-        if not year_models_dashboard: year_models_dashboard = get_unique_options_dashboard(df, "Year/Model") # Use all if empty
+        df_filtered = df.copy()
+        st.info(f"🔍 Debug: Starting categorical filters with {len(df_filtered)} rows")
         
-        df_filtered = df[
-            df["BRAND"].isin(brands_dashboard) &
-            df["SPORT"].isin(sports_dashboard) &
-            df["TYPE1"].isin(type1s_dashboard) &
-            df["Year/Model"].isin(year_models_dashboard) # Added Year/Model filter
-        ]
+        # Apply BRAND filter
+        if brands_dashboard and 'BRAND' in df_filtered.columns:
+            # Include both selected values and handle NaN separately
+            brand_mask = df_filtered["BRAND"].astype(str).isin(brands_dashboard)
+            df_filtered = df_filtered[brand_mask]
+            st.info(f"🔍 Debug: After BRAND filter: {len(df_filtered)} rows")
         
+        # Apply SPORT filter
+        if sports_dashboard and 'SPORT' in df_filtered.columns:
+            sport_mask = df_filtered["SPORT"].astype(str).isin(sports_dashboard)
+            df_filtered = df_filtered[sport_mask]
+            st.info(f"🔍 Debug: After SPORT filter: {len(df_filtered)} rows")
+        
+        # Apply TYPE1 filter
+        if type1s_dashboard and 'TYPE1' in df_filtered.columns:
+            type1_mask = df_filtered["TYPE1"].astype(str).isin(type1s_dashboard)
+            df_filtered = df_filtered[type1_mask]
+            st.info(f"🔍 Debug: After TYPE1 filter: {len(df_filtered)} rows")
+        
+        # Apply Year/Model filter
+        if year_models_dashboard and 'Year/Model' in df_filtered.columns:
+            year_model_mask = df_filtered["Year/Model"].astype(str).isin(year_models_dashboard)
+            df_filtered = df_filtered[year_model_mask]
+            st.info(f"🔍 Debug: After Year/Model filter: {len(df_filtered)} rows")
+
+        # Numerical Filters Helper Function
+        def safe_add_range_slider(column_name, key_suffix=""):
+            """Safely create a range slider with proper error handling"""
+            # Check if column exists and has data
+            if column_name not in df_filtered.columns:
+                return None, None
+                
+            if df_filtered.empty:
+                return None, None
+                
+            # Get numeric values, but don't exclude NaN - just get valid ones for range calculation
+            numeric_values = pd.to_numeric(df_filtered[column_name], errors='coerce')
+            valid_values = numeric_values.dropna()
+            
+            if len(valid_values) == 0:
+                return None, None
+            
+            min_val = valid_values.min()
+            max_val = valid_values.max()
+            
+            # Calculate appropriate step
+            if min_val == max_val:
+                # All values are the same
+                range_width = max(abs(min_val) * 0.1, 1.0)
+                min_range = min_val - range_width
+                max_range = max_val + range_width
+                step = range_width / 10
+            else:
+                min_range = min_val
+                max_range = max_val
+                value_range = max_val - min_val
+                
+                if value_range < 1:
+                    step = 0.01
+                elif value_range < 100:
+                    step = 0.1
+                else:
+                    step = value_range / 100
+                    step = max(step, 1.0)
+            
+            try:
+                # Create slider with initial value set to full range (no filtering by default)
+                selected_range = st.sidebar.slider(
+                    f"Filter by {column_name}:",
+                    min_value=float(min_range),
+                    max_value=float(max_range),
+                    value=(float(min_range), float(max_range)),  # Default to full range
+                    step=float(step),
+                    key=f"slider_{column_name.replace(' ', '_').replace('(', '').replace(')', '')}_{key_suffix}",
+                    help=f"Drag to filter. Products with missing {column_name} are always included."
+                )
+                
+                # Only return the range if user has actually moved the slider from default
+                if selected_range == (float(min_range), float(max_range)):
+                    return None, None  # Don't apply filter if at default range
+                    
+                return selected_range
+            except Exception as e:
+                return None, None
+
         # Numerical Filters (using sliders, handle potential NaNs and empty filtered data)
         # (Keep existing add_range_slider and its applications as they were for the dashboard tab)
         def add_range_slider(column_name, key_suffix=""): # Added key_suffix for unique keys
@@ -255,29 +376,67 @@ else:
 
         # --- Apply Text Search Filters ---
         df_final_filtered = df_filtered.copy() # Start with categorically filtered data
+        st.info(f"🔍 Debug: Starting text search filters with {len(df_final_filtered)} rows")
 
         if ean_search and 'EAN' in df_final_filtered.columns:
             df_final_filtered = df_final_filtered[df_final_filtered['EAN'].astype(str).str.contains(ean_search, case=False, na=False)]
+            st.info(f"🔍 Debug: After EAN search: {len(df_final_filtered)} rows")
         if sku_search and 'SKU' in df_final_filtered.columns:
             df_final_filtered = df_final_filtered[df_final_filtered['SKU'].astype(str).str.contains(sku_search, case=False, na=False)]
+            st.info(f"🔍 Debug: After SKU search: {len(df_final_filtered)} rows")
         if search_term and 'ITEM NAME' in df_final_filtered.columns:
              df_final_filtered = df_final_filtered[df_final_filtered['ITEM NAME'].str.contains(search_term, case=False, na=False)]
+             st.info(f"🔍 Debug: After ITEM NAME search: {len(df_final_filtered)} rows")
 
         # Apply Co-occurrence Filter
-        if selected_competitors_for_coccurrence_filter:
-            rows_to_keep_coccurrence = []
-            for index, row in df_final_filtered.iterrows():
-                rc_price_is_valid = pd.notna(pd.to_numeric(row.get(RC_PRICE_COLUMN), errors='coerce'))
-                if not rc_price_is_valid: continue
-                at_least_one_selected_competitor_has_price = False
-                for comp_col in selected_competitors_for_coccurrence_filter:
-                    if comp_col in row and pd.notna(pd.to_numeric(row[comp_col], errors='coerce')):
-                        at_least_one_selected_competitor_has_price = True
-                        break
-                if at_least_one_selected_competitor_has_price:
-                    rows_to_keep_coccurrence.append(index)
-            df_final_filtered = df_final_filtered.loc[rows_to_keep_coccurrence] if rows_to_keep_coccurrence else df_final_filtered.iloc[0:0]
+        if selected_competitors_for_coccurrence_filter and RC_PRICE_COLUMN in df_final_filtered.columns:
+            # Create boolean mask for valid RC prices
+            rc_price_valid = pd.notna(pd.to_numeric(df_final_filtered[RC_PRICE_COLUMN], errors='coerce'))
+            
+            # Create boolean mask for having at least one valid competitor price
+            competitor_price_valid = pd.Series(False, index=df_final_filtered.index)
+            
+            for comp_col in selected_competitors_for_coccurrence_filter:
+                if comp_col in df_final_filtered.columns:
+                    comp_prices_valid = pd.notna(pd.to_numeric(df_final_filtered[comp_col], errors='coerce'))
+                    competitor_price_valid = competitor_price_valid | comp_prices_valid
+            
+            # Apply combined filter
+            df_final_filtered = df_final_filtered[rc_price_valid & competitor_price_valid]
+            st.info(f"🔍 Debug: After co-occurrence filter: {len(df_final_filtered)} rows")
 
+        # Optional Numerical Filters
+        st.sidebar.subheader("Optional Numerical Filters")
+        st.sidebar.caption("These filters are applied after categorical filters")
+        
+        # Common numerical columns to filter by
+        numerical_filter_columns = [
+            'LOWEST PRICE (B2C)', 'RACKET CENTRAL', 'Unit Cost', 'MAP',
+            'Total Stock (QTY)', 'Stock Days on Hand', 'RC Marginal Contribution (%)'
+        ]
+        
+        # Add numerical filters
+        applied_filters = {}
+        for col in numerical_filter_columns:
+            if col in df_final_filtered.columns:
+                range_result = safe_add_range_slider(col, "dashboard")
+                if range_result and range_result != (None, None):
+                    min_filter, max_filter = range_result
+                    # Apply the filter to df_final_filtered - INCLUDE NaN values
+                    numeric_values = pd.to_numeric(df_final_filtered[col], errors='coerce')
+                    # Keep NaN values AND values within range
+                    filter_mask = (numeric_values.isna()) | ((numeric_values >= min_filter) & (numeric_values <= max_filter))
+                    rows_before = len(df_final_filtered)
+                    df_final_filtered = df_final_filtered[filter_mask]
+                    st.info(f"🔍 Debug: After {col} filter: {len(df_final_filtered)} rows (filtered out: {rows_before - len(df_final_filtered)})")
+                    applied_filters[col] = (min_filter, max_filter)
+        
+        # Show applied filters summary
+        if applied_filters:
+            st.sidebar.caption(f"Active numerical filters: {len(applied_filters)}")
+            
+        # Final debug summary
+        st.info(f"🔍 Debug: FINAL RESULT - {len(df_final_filtered)} rows after all filters")
 
         # --- Calculate Price Comparison KPIs ---
         total_comparable_products_kpi = 0
@@ -515,18 +674,6 @@ else:
             st.caption("Highlights potential issues based on predefined thresholds (e.g., high/low stock, pricing below cost).")
             # Remove the columns layout
             # alert_cols = st.columns(3)
-
-            # High Stock Days
-            HIGH_STOCK_DAYS = 180 # Example threshold
-            df_high_stock = df_final_filtered[df_final_filtered['Stock Days on Hand'] > HIGH_STOCK_DAYS]
-            # Display directly without column
-            st.warning(f"High Stock ({len(df_high_stock)} items > {HIGH_STOCK_DAYS} days)")
-            if not df_high_stock.empty:
-                # Removed height=200
-                st.dataframe(df_high_stock[['BRAND', 'ITEM NAME', 'Stock Days on Hand']].sort_values('Stock Days on Hand', ascending=False), use_container_width=True, hide_index=True)
-            else:
-                st.info("No items with high stock days.")
-            st.divider() # Add divider between alerts
 
             # Low Stock Days
             LOW_STOCK_DAYS = 30 # Example threshold
