@@ -52,9 +52,9 @@ def fetch_data(_gc: gspread.Client):
         records = worksheet.get_all_records(head=1) # Assumes header is on row 1
         df = pd.DataFrame(records)
         
-        # Add debugging information
-        initial_row_count = len(df)
-        st.info(f"🔍 Debug: Loaded {initial_row_count} rows from Google Sheets")
+        # Rename columns for consistency
+        if 'RC Marginal Contribution (%)' in df.columns:
+            df.rename(columns={'RC Marginal Contribution (%)': 'B2C Marginal Contribution (%)'}, inplace=True)
         
         # --- Ensure 'Year/Model' is present as a column (if not, try to add as empty) ---
         if 'Year/Model' not in df.columns:
@@ -65,8 +65,7 @@ def fetch_data(_gc: gspread.Client):
         df = df.replace(r'^\s*$', pd.NA, regex=True)  # Only replace empty or whitespace-only strings
         
         rows_after_cleanup = len(df)
-        st.info(f"🔍 Debug: After basic cleanup: {rows_after_cleanup} rows (lost: {initial_row_count - rows_after_cleanup})")
-
+        
         # Convert 'Year/Model' to string type for consistent filtering - simplified approach
         if 'Year/Model' in df.columns:
             df['Year/Model'] = df['Year/Model'].astype(str)
@@ -75,12 +74,12 @@ def fetch_data(_gc: gspread.Client):
         for col in df.columns: # C: This loop handles numeric/percentage conversions for other columns.
                                # 'Year/Model' is not in numeric_cols or percentage_cols, so it's skipped.
             # Identify numeric and percentage columns
-            numeric_cols = ['LOWEST PRICE (B2C)', 'MAP', 'RC Suggested Price', 'Unit Cost',
+            numeric_cols = ['LOWEST PRICE (B2C)', 'MAP', 'B2C Suggested Price', 'Unit Cost',
                             'Total Stock (QTY)', 'total Stock sold (last 12 M) (Qty)', 'Stock Days on Hand',
-                            'RACKET CENTRAL', 'JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH',
-                            'PICKLEBALL CENTRAL'
+                            'RACKET CENTRAL B2C', 'JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH',
+                            'PICKLEBALL CENTRAL', 'RACKET CENTRAL B2B'
                            ]
-            percentage_cols = ['RC Marginal Contribution (%)', 'B2B Marginal Contribution (%)']
+            percentage_cols = ['B2C Marginal Contribution (%)', 'B2B Marginal Contribution (%)']
             
             if col in numeric_cols or col in percentage_cols:
                  # Clean currency/percentage symbols if present before converting
@@ -107,9 +106,31 @@ def fetch_data(_gc: gspread.Client):
                     df[col] = df[col] / 100.0
         # else: keep non-numeric, non-percentage columns as they are
         
+        # --- (Re)Calculate Marginal Contributions directly in the script ---
+        # This ensures consistency and overrides any values from the sheet.
+        
+        # B2C Marginal Contribution
+        if 'RACKET CENTRAL B2C' in df.columns and 'Unit Cost' in df.columns:
+            price_b2c = pd.to_numeric(df['RACKET CENTRAL B2C'], errors='coerce')
+            cost = pd.to_numeric(df['Unit Cost'], errors='coerce')
+            # To prevent division by zero, replace 0 with NaN
+            price_b2c_div = price_b2c.replace(0, pd.NA)
+            df['B2C Marginal Contribution (%)'] = (price_b2c - cost) / price_b2c_div
+        else:
+            df['B2C Marginal Contribution (%)'] = pd.NA # Ensure column exists even if it can't be calculated
+
+        # B2B Marginal Contribution
+        if 'RACKET CENTRAL B2B' in df.columns and 'Unit Cost' in df.columns:
+            price_b2b = pd.to_numeric(df['RACKET CENTRAL B2B'], errors='coerce')
+            cost = pd.to_numeric(df['Unit Cost'], errors='coerce')
+            # To prevent division by zero, replace 0 with NaN
+            price_b2b_div = price_b2b.replace(0, pd.NA)
+            df['B2B Marginal Contribution (%)'] = (price_b2b - cost) / price_b2b_div
+        else:
+            df['B2B Marginal Contribution (%)'] = pd.NA # Ensure column exists
+        
         final_row_count = len(df)
-        st.info(f"🔍 Debug: After numeric processing: {final_row_count} rows (lost: {initial_row_count - final_row_count})")
-                
+        
         return df
     except gspread.exceptions.APIError as e:
         st.error(f"❌ Google API Error: {e}")
@@ -144,18 +165,28 @@ df_original = fetch_data(gc)
 if df_original.empty:
     st.warning("Could not load data from Google Sheets. Please check the connection and sheet configuration.")
 else:
-    st.success(f"✅ Data loaded successfully from Google Sheet! Contains {len(df_original)} rows.")
+    try:
+        spreadsheet_key = st.secrets["google_sheets"]["spreadsheet_key"]
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_key}"
+        st.success(f"✅ Data loaded successfully from Google Sheet! Contains {len(df_original)} rows. [View Sheet]({sheet_url})")
+    except (KeyError, TypeError):
+        st.success(f"✅ Data loaded successfully from Google Sheet! Contains {len(df_original)} rows.")
 
     # --- Define global constants for columns ---
     ALL_COMPETITOR_COLUMNS = sorted(['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH', 'PICKLEBALL CENTRAL'])
-    RC_PRICE_COLUMN = 'RACKET CENTRAL'
+    RC_PRICE_COLUMN = 'RACKET CENTRAL B2C'
     # Assuming RACKET_CENTRAL_B2B_PRICE_COLUMN is a column in your sheet, e.g., 'RC B2B Price'
     # If it's named differently, adjust this constant.
     # If it needs to be calculated, that logic would go into fetch_data or here.
     RC_B2B_PRICE_COLUMN = 'RACKET CENTRAL B2B' # Placeholder, ensure this column exists in your data source
 
     # --- Main Application Tabs ---
-    tab_dashboard, tab_simulator, tab_completeness = st.tabs(["📊 Dashboard Overview", "⚙️ Price Simulator", "🔍 Data Completeness Analysis"])
+    tab_dashboard, tab_simulator, tab_stock_analysis, tab_completeness = st.tabs([
+        "📊 Dashboard Overview", 
+        "⚙️ Price Simulator", 
+        "📦 Stock Analysis",
+        "🔍 Data Completeness Analysis"
+    ])
 
     with tab_dashboard:
         st.header("📋 Dashboard Filters & Overview")
@@ -243,32 +274,27 @@ else:
 
         # Apply Categorical Filters
         df_filtered = df.copy()
-        st.info(f"🔍 Debug: Starting categorical filters with {len(df_filtered)} rows")
         
         # Apply BRAND filter
         if brands_dashboard and 'BRAND' in df_filtered.columns:
             # Include both selected values and handle NaN separately
             brand_mask = df_filtered["BRAND"].astype(str).isin(brands_dashboard)
             df_filtered = df_filtered[brand_mask]
-            st.info(f"🔍 Debug: After BRAND filter: {len(df_filtered)} rows")
         
         # Apply SPORT filter
         if sports_dashboard and 'SPORT' in df_filtered.columns:
             sport_mask = df_filtered["SPORT"].astype(str).isin(sports_dashboard)
             df_filtered = df_filtered[sport_mask]
-            st.info(f"🔍 Debug: After SPORT filter: {len(df_filtered)} rows")
         
         # Apply TYPE1 filter
         if type1s_dashboard and 'TYPE1' in df_filtered.columns:
             type1_mask = df_filtered["TYPE1"].astype(str).isin(type1s_dashboard)
             df_filtered = df_filtered[type1_mask]
-            st.info(f"🔍 Debug: After TYPE1 filter: {len(df_filtered)} rows")
         
         # Apply Year/Model filter
         if year_models_dashboard and 'Year/Model' in df_filtered.columns:
             year_model_mask = df_filtered["Year/Model"].astype(str).isin(year_models_dashboard)
             df_filtered = df_filtered[year_model_mask]
-            st.info(f"🔍 Debug: After Year/Model filter: {len(df_filtered)} rows")
 
         # Numerical Filters Helper Function
         def safe_add_range_slider(column_name, key_suffix=""):
@@ -376,17 +402,13 @@ else:
 
         # --- Apply Text Search Filters ---
         df_final_filtered = df_filtered.copy() # Start with categorically filtered data
-        st.info(f"🔍 Debug: Starting text search filters with {len(df_final_filtered)} rows")
 
         if ean_search and 'EAN' in df_final_filtered.columns:
             df_final_filtered = df_final_filtered[df_final_filtered['EAN'].astype(str).str.contains(ean_search, case=False, na=False)]
-            st.info(f"🔍 Debug: After EAN search: {len(df_final_filtered)} rows")
         if sku_search and 'SKU' in df_final_filtered.columns:
             df_final_filtered = df_final_filtered[df_final_filtered['SKU'].astype(str).str.contains(sku_search, case=False, na=False)]
-            st.info(f"🔍 Debug: After SKU search: {len(df_final_filtered)} rows")
         if search_term and 'ITEM NAME' in df_final_filtered.columns:
              df_final_filtered = df_final_filtered[df_final_filtered['ITEM NAME'].str.contains(search_term, case=False, na=False)]
-             st.info(f"🔍 Debug: After ITEM NAME search: {len(df_final_filtered)} rows")
 
         # Apply Co-occurrence Filter
         if selected_competitors_for_coccurrence_filter and RC_PRICE_COLUMN in df_final_filtered.columns:
@@ -403,7 +425,6 @@ else:
             
             # Apply combined filter
             df_final_filtered = df_final_filtered[rc_price_valid & competitor_price_valid]
-            st.info(f"🔍 Debug: After co-occurrence filter: {len(df_final_filtered)} rows")
 
         # Optional Numerical Filters
         st.sidebar.subheader("Optional Numerical Filters")
@@ -411,8 +432,8 @@ else:
         
         # Common numerical columns to filter by
         numerical_filter_columns = [
-            'LOWEST PRICE (B2C)', 'RACKET CENTRAL', 'Unit Cost', 'MAP',
-            'Total Stock (QTY)', 'Stock Days on Hand', 'RC Marginal Contribution (%)'
+            'LOWEST PRICE (B2C)', 'RACKET CENTRAL B2C', 'Unit Cost', 'MAP',
+            'Total Stock (QTY)', 'Stock Days on Hand', 'B2C Marginal Contribution (%)'
         ]
         
         # Add numerical filters
@@ -428,15 +449,12 @@ else:
                     filter_mask = (numeric_values.isna()) | ((numeric_values >= min_filter) & (numeric_values <= max_filter))
                     rows_before = len(df_final_filtered)
                     df_final_filtered = df_final_filtered[filter_mask]
-                    st.info(f"🔍 Debug: After {col} filter: {len(df_final_filtered)} rows (filtered out: {rows_before - len(df_final_filtered)})")
                     applied_filters[col] = (min_filter, max_filter)
         
         # Show applied filters summary
         if applied_filters:
             st.sidebar.caption(f"Active numerical filters: {len(applied_filters)}")
             
-        # Final debug summary
-        st.info(f"🔍 Debug: FINAL RESULT - {len(df_final_filtered)} rows after all filters")
 
         # --- Calculate Price Comparison KPIs ---
         total_comparable_products_kpi = 0
@@ -507,50 +525,76 @@ else:
             st.caption("High-level metrics calculated from the currently filtered data.")
             kpi_cols = st.columns(4)
             total_products = len(df_final_filtered)
-            avg_b2c_price = df_final_filtered['LOWEST PRICE (B2C)'].mean()
-            avg_rc_price = df_final_filtered['RACKET CENTRAL'].mean()
+            
+            # Fixed: Use consistent price columns
+            avg_rc_b2c_price = df_final_filtered['RACKET CENTRAL B2C'].mean()
+            avg_rc_b2b_price = df_final_filtered['RACKET CENTRAL B2B'].mean()
             avg_cost = df_final_filtered['Unit Cost'].mean()
             avg_stock_days = df_final_filtered['Stock Days on Hand'].mean()
             total_stock_qty = df_final_filtered['Total Stock (QTY)'].sum()
-            # Calculate total stock value safely, handling NaNs
+            
+            # Fixed: Calculate stock value using unit cost for proper inventory valuation
             df_final_filtered['Stock Value'] = df_final_filtered['Total Stock (QTY)'] * df_final_filtered['Unit Cost']
             total_stock_value = df_final_filtered['Stock Value'].sum()
-            avg_margin_b2c = df_final_filtered['RC Marginal Contribution (%)'].mean()
 
-            kpi_cols[0].metric("Total Products", f"{total_products:,}")
-            kpi_cols[1].metric("Avg. B2C Price", f"${avg_b2c_price:,.2f}" if pd.notna(avg_b2c_price) else "N/A")
-            kpi_cols[2].metric("Avg. RC Price", f"${avg_rc_price:,.2f}" if pd.notna(avg_rc_price) else "N/A")
-            kpi_cols[3].metric("Avg. Unit Cost", f"${avg_cost:,.2f}" if pd.notna(avg_cost) else "N/A")
+            # --- Corrected Margin Calculations ---
+            # B2C Margin
+            margin_b2c = (df_final_filtered['RACKET CENTRAL B2C'] - df_final_filtered['Unit Cost']) / df_final_filtered['RACKET CENTRAL B2C']
+            avg_b2c_margin = margin_b2c.mean()
+            # B2B Margin
+            margin_b2b = (df_final_filtered['RACKET CENTRAL B2B'] - df_final_filtered['Unit Cost']) / df_final_filtered['RACKET CENTRAL B2B']
+            avg_b2b_margin = margin_b2b.mean()
+
+
+            # Added help tooltips to all metrics
+            kpi_cols[0].metric("Total Products", f"{total_products:,}", 
+                              help="Total number of products in the current filtered selection")
+            kpi_cols[1].metric("Avg. RC B2C Price", f"${avg_rc_b2c_price:,.2f}" if pd.notna(avg_rc_b2c_price) else "N/A",
+                              help="Average of 'RACKET CENTRAL B2C' price column across all filtered products.")
+            kpi_cols[2].metric("Avg. RC B2B Price", f"${avg_rc_b2b_price:,.2f}" if pd.notna(avg_rc_b2b_price) else "N/A",
+                              help="Average of 'RACKET CENTRAL B2B' column across all filtered products.")
+            kpi_cols[3].metric("Avg. Unit Cost", f"${avg_cost:,.2f}" if pd.notna(avg_cost) else "N/A",
+                              help="Average of 'Unit Cost' column across all filtered products")
 
             kpi_cols = st.columns(4) # New row for more KPIs
-            kpi_cols[0].metric("Total Stock Qty", f"{total_stock_qty:,.0f}" if pd.notna(total_stock_qty) else "N/A")
-            kpi_cols[1].metric("Total Stock Value", f"${total_stock_value:,.2f}" if pd.notna(total_stock_value) else "N/A")
-            kpi_cols[2].metric("Avg. Stock Days", f"{avg_stock_days:,.1f}" if pd.notna(avg_stock_days) else "N/A")
-            kpi_cols[3].metric("Avg. RC Margin %", f"{avg_margin_b2c:.1%}" if pd.notna(avg_margin_b2c) else "N/A")
+            kpi_cols[0].metric("Total Stock Qty", f"{total_stock_qty:,.0f}" if pd.notna(total_stock_qty) else "N/A",
+                              help="Sum of 'Total Stock (QTY)' across all filtered products")
+            kpi_cols[1].metric("Total Stock Value", f"${total_stock_value:,.2f}" if pd.notna(total_stock_value) else "N/A",
+                              help="💰 Total Inventory Value: Sum of (Stock QTY × Unit Cost) for all filtered products. Represents the book value of inventory.")
+            kpi_cols[2].metric("Avg. Stock Days", f"{avg_stock_days:,.1f}" if pd.notna(avg_stock_days) else "N/A",
+                              help="Average of 'Stock Days on Hand' across all filtered products")
+            kpi_cols[3].metric("Avg. RC B2C Margin %", f"{avg_b2c_margin:.1%}" if pd.notna(avg_b2c_margin) else "N/A",
+                              help="Average B2C Margin: ((RC B2C Price - Unit Cost) / RC B2C Price)")
 
             # Calculate and add Total Sales (12M) KPI
-            # Use 'RACKET CENTRAL' as the price column
-            df_final_filtered['Sales Value (12M)'] = df_final_filtered['total Stock sold (last 12 M) (Qty)'] * df_final_filtered['RACKET CENTRAL'] # Corrected column name
+            # Fixed: Use consistent price column and add tooltip
+            df_final_filtered['Sales Value (12M)'] = df_final_filtered['total Stock sold (last 12 M) (Qty)'] * df_final_filtered['RACKET CENTRAL B2C']
             total_sales_12m = df_final_filtered['Sales Value (12M)'].sum()
 
             # Add a new row for the sales KPI
             kpi_cols_row3 = st.columns(4) # Use 4 columns for alignment, place KPI in the first
-            kpi_cols_row3[0].metric("Total Sales (12M)", f"${total_sales_12m:,.2f}" if pd.notna(total_sales_12m) else "N/A")
+            kpi_cols_row3[0].metric("Total Sales (12M)", f"${total_sales_12m:,.2f}" if pd.notna(total_sales_12m) else "N/A",
+                                   help="Total sales value over last 12 months: Sum of (Units Sold × RACKET CENTRAL B2C Price) for all filtered products")
+            kpi_cols_row3[1].metric("Avg. RC B2B Margin %", f"{avg_b2b_margin:.1%}" if pd.notna(avg_b2b_margin) else "N/A",
+                                   help="Average B2B Margin: ((RACKET CENTRAL B2B - Unit Cost) / RACKET CENTRAL B2B)")
 
             # Add Price Competitiveness KPIs
             st.subheader("Price Competitiveness")
             kpi_comp_row = st.columns(3)
             kpi_comp_row[0].metric(
                 "Total Comparable Products",
-                f"{total_comparable_products_kpi}"
+                f"{total_comparable_products_kpi}",
+                help="Number of products where both RC and at least one competitor have valid prices for comparison"
             )
             kpi_comp_row[1].metric(
                 f"RC Lowest Priced",
-                f"{rc_is_lowest_count_kpi} ({percentage_lowest_kpi:.1f}%)"
+                f"{rc_is_lowest_count_kpi} ({percentage_lowest_kpi:.1f}%)",
+                help="Products where RACKET CENTRAL B2C price ≤ minimum competitor price among comparable products"
             )
             kpi_comp_row[2].metric(
                 f"RC Higher Priced",
-                f"{rc_is_higher_count_kpi} ({percentage_higher_kpi:.1f}%)"
+                f"{rc_is_higher_count_kpi} ({percentage_higher_kpi:.1f}%)",
+                help="Products where RACKET CENTRAL B2C price > at least one competitor price among comparable products"
             )
             if selected_competitors_for_coccurrence_filter:
                 st.caption(f"Competitiveness KPIs based on products also priced by {available_competitors_for_kpi_count} selected competitor(s).")
@@ -688,12 +732,12 @@ else:
             st.divider() # Add divider between alerts
 
             # Price Below Cost
-            df_below_cost = df_final_filtered[df_final_filtered['RACKET CENTRAL'] < df_final_filtered['Unit Cost']]
+            df_below_cost = df_final_filtered[df_final_filtered['RACKET CENTRAL B2C'] < df_final_filtered['Unit Cost']]
             # Display directly without column
             st.error(f"Price Below Cost ({len(df_below_cost)} items)")
             if not df_below_cost.empty:
                 # Removed height=200
-                st.dataframe(df_below_cost[['BRAND', 'ITEM NAME', 'Unit Cost', 'RACKET CENTRAL']], use_container_width=True, hide_index=True)
+                st.dataframe(df_below_cost[['BRAND', 'ITEM NAME', 'Unit Cost', 'RACKET CENTRAL B2C']], use_container_width=True, hide_index=True)
             else:
                 st.info("No items priced below cost.")
 
@@ -707,51 +751,35 @@ else:
             # --- Visualizations ---
             st.subheader("📊 Visualizations")
             st.caption("Visual representations of the filtered data across different categories.")
-            tab2, tab3, tab_compare = st.tabs(["Stock Analysis", "Margins & Costs", "Price Comparison"])
-
-            with tab2:
-                st.markdown("#### Stock Analysis")
-                st.caption("Visualizations related to stock quantity and days on hand.")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if not df_final_filtered['Total Stock (QTY)'].isnull().all():
-                        stock_by_brand = df_final_filtered.groupby('BRAND')['Total Stock (QTY)'].sum().reset_index().sort_values('Total Stock (QTY)', ascending=False)
-                        fig_stock_brand = px.bar(stock_by_brand, x='BRAND', y='Total Stock (QTY)', title='Total Stock Quantity by Brand')
-                        st.plotly_chart(fig_stock_brand, use_container_width=True)
-                    else: st.info("No Stock Quantity data to display.")
-                with col2:
-                    if not df_final_filtered['Stock Days on Hand'].isnull().all():
-                        fig_stock_days = px.histogram(df_final_filtered, x="Stock Days on Hand", title="Stock Days on Hand Distribution", nbins=30)
-                        st.plotly_chart(fig_stock_days, use_container_width=True)
-                    else: st.info("No Stock Days on Hand data to display.")
+            tab3, tab_compare = st.tabs(["Margins & Costs", "Price Comparison"])
 
             with tab3:
                 st.markdown("#### Margins & Costs")
                 st.caption("Visualizations comparing costs, prices, and profit margins.")
                 col1, col2 = st.columns(2)
                 with col1:
-                    if 'RC Marginal Contribution (%)' in df_final_filtered.columns and not df_final_filtered['RC Marginal Contribution (%)'].isnull().all():
-                         margin_by_brand = df_final_filtered.groupby('BRAND')['RC Marginal Contribution (%)'].mean().reset_index().sort_values('RC Marginal Contribution (%)', ascending=False)
-                         fig_margin_brand = px.bar(margin_by_brand, x='BRAND', y='RC Marginal Contribution (%)', title='Average RC Margin % by Brand', labels={'RC Marginal Contribution (%)':'Avg. Margin (%)'})
+                    if 'B2C Marginal Contribution (%)' in df_final_filtered.columns and not df_final_filtered['B2C Marginal Contribution (%)'].isnull().all():
+                         margin_by_brand = df_final_filtered.groupby('BRAND')['B2C Marginal Contribution (%)'].mean().reset_index().sort_values('B2C Marginal Contribution (%)', ascending=False)
+                         fig_margin_brand = px.bar(margin_by_brand, x='BRAND', y='B2C Marginal Contribution (%)', title='Average B2C Margin % by Brand', labels={'B2C Marginal Contribution (%)':'Avg. Margin (%)'})
                          fig_margin_brand.update_layout(yaxis_tickformat='.1%')
                          st.plotly_chart(fig_margin_brand, use_container_width=True)
                     else: st.info("No Margin data to display.")
                 with col2:
-                     if not df_final_filtered['Unit Cost'].isnull().all() and not df_final_filtered['RACKET CENTRAL'].isnull().all():
-                        fig_cost_price = px.scatter(df_final_filtered, x="Unit Cost", y="RACKET CENTRAL",
-                                                    title="Unit Cost vs. RACKET CENTRAL Price",
+                     if not df_final_filtered['Unit Cost'].isnull().all() and not df_final_filtered['RACKET CENTRAL B2C'].isnull().all():
+                        fig_cost_price = px.scatter(df_final_filtered, x="Unit Cost", y="RACKET CENTRAL B2C",
+                                                    title="Unit Cost vs. RACKET CENTRAL B2C Price",
                                                     color="BRAND", hover_data=['ITEM NAME']) # Use 'ITEM NAME'
                         st.plotly_chart(fig_cost_price, use_container_width=True)
-                     else: st.info("Insufficient Cost or RACKET CENTRAL Price data for scatter plot.")
+                     else: st.info("Insufficient Cost or RACKET CENTRAL B2C Price data for scatter plot.")
 
             # --- Price Comparison Tab ---
             with tab_compare:
                 st.markdown("#### Competitor Price Comparison")
-                st.caption("Compares 'RACKET CENTRAL' prices against available competitor data.")
+                st.caption("Compares 'RACKET CENTRAL B2C' prices against available competitor data.")
 
                 # Define potential competitor columns
                 competitor_cols = ['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'FROMUTH', 'PICKLEBALL CENTRAL']
-                rc_price_col = 'RACKET CENTRAL' # Our price column
+                rc_price_col = 'RACKET CENTRAL B2C' # Our price column
 
                 # Identify competitors actually present in the filtered data
                 available_competitors = [col for col in competitor_cols if col in df_final_filtered.columns and not df_final_filtered[col].isnull().all()]
@@ -784,7 +812,7 @@ else:
                         if total_comparable > 0:
                             rc_cheaper_count = (df_comparison[diff_col_name][valid_comparisons] < 0).sum()
                             rc_more_expensive_count = (df_comparison[diff_col_name][valid_comparisons] > 0).sum()
-                            # rc_same_price_count = (df_comparison[diff_col_name][valid_comparisons] == 0).sum() # Not explicitly used in metric
+                            rc_same_price_count = (df_comparison[diff_col_name][valid_comparisons] == 0).sum()
 
                             avg_diff = df_comparison[diff_col_name][valid_comparisons].mean()
                             
@@ -798,7 +826,7 @@ else:
                                     delta=delta_text,
                                     delta_color=delta_color
                                 )
-                                st.caption(f"RC More Expensive: {rc_more_expensive_count}")
+                                st.caption(f"More Expensive: {rc_more_expensive_count} | Same Price: {rc_same_price_count}")
                         else:
                              with kpi_compare_cols[i]:
                                  st.info(f"No comparable prices found for {competitor}.")
@@ -825,6 +853,147 @@ else:
         # --- Display Original Data (Optional Expander) ---
         with st.expander("Show Original Full Data (Unfiltered)"):
            st.dataframe(df_original, use_container_width=True, hide_index=True)
+
+    # --- STOCK ANALYSIS TAB ---
+    with tab_stock_analysis:
+        st.header("📦 Stock Analysis")
+        st.caption("Detailed inventory analysis based on the current filters.")
+
+        if df_final_filtered.empty:
+            st.warning("No data matches the selected filters to analyze stock.")
+        else:
+            # --- 1. KPIs Generales de Inventario ---
+            st.subheader("General Inventory KPIs")
+            
+            # Use a copy to avoid changing the original filtered df
+            df_stock = df_final_filtered.copy()
+
+            # Ensure required columns are numeric
+            df_stock['Total Stock (QTY)'] = pd.to_numeric(df_stock['Total Stock (QTY)'], errors='coerce')
+            df_stock['Unit Cost'] = pd.to_numeric(df_stock['Unit Cost'], errors='coerce')
+            df_stock['Stock Days on Hand'] = pd.to_numeric(df_stock['Stock Days on Hand'], errors='coerce')
+            
+            # Calculate Inventory Value
+            df_stock['Inventory Value'] = df_stock['Total Stock (QTY)'] * df_stock['Unit Cost']
+            
+            # Calculations
+            total_inventory_value = df_stock['Inventory Value'].sum()
+            total_units = df_stock['Total Stock (QTY)'].sum()
+            
+            skus_with_stock = df_stock[df_stock['Total Stock (QTY)'] > 0]['SKU'].nunique()
+            skus_without_stock = df_stock[df_stock['Total Stock (QTY)'] <= 0]['SKU'].nunique()
+            
+            avg_stock_days = df_stock[df_stock['Total Stock (QTY)'] > 0]['Stock Days on Hand'].mean()
+
+            kpi_cols_stock = st.columns(5)
+            kpi_cols_stock[0].metric("Total Value (Cost)", f"${total_inventory_value:,.2f}", 
+                                     help="Sum of (`Total Stock (QTY)` * `Unit Cost`) for all filtered products.")
+            kpi_cols_stock[1].metric("Total Units", f"{total_units:,.0f}",
+                                     help="Sum of `Total Stock (QTY)` for all filtered products.")
+            kpi_cols_stock[2].metric("SKUs with Stock", f"{skus_with_stock:,}",
+                                     help="Count of unique SKUs with `Total Stock (QTY)` > 0.")
+            kpi_cols_stock[3].metric("SKUs without Stock", f"{skus_without_stock:,}",
+                                     help="Count of unique SKUs with `Total Stock (QTY)` <= 0.")
+            kpi_cols_stock[4].metric("Avg. Stock Days", f"{avg_stock_days:,.1f}",
+                                     help="Average of `Stock Days on Hand` for products with stock > 0.")
+            
+            with st.expander("ℹ️ How are 'Stock Days on Hand' calculated and interpreted?", expanded=False):
+                st.markdown("""
+                The **Average Stock Days on Hand** indicator represents the average number of days an item remains in inventory before being sold.
+
+                #### Interpretation
+                - A **low number** indicates high turnover and efficiency, but can imply a risk of stockout.
+                - A **high number** may suggest overstock, tied-up capital, or slow sales.
+
+                ---
+                #### Calculation in the Data Sheet
+                The `Stock Days on Hand` value is calculated directly in the Google Sheets for each individual product using the following formula:
+                ```
+                (Total Stock (QTY) / total Stock sold (last 12 M) (Qty)) * 365
+                ```
+
+                **Formula Breakdown:**
+                - **`Total Stock (QTY)`**: The current number of units in inventory.
+                - **`total Stock sold (last 12 M) (Qty)`**: The total units sold in the last 12 months.
+
+                This calculation estimates how many days the current inventory would last if the sales pace remains the same as the last year. It assumes future sales will be similar to past sales.
+
+                ---
+                #### Calculation in this Dashboard
+                This dashboard **reads this pre-calculated value** from the data sheet. The **"Avg. Stock Days"** metric shown in the KPIs is the **simple average** of these values for all filtered products that have stock.
+                """)
+
+            st.divider()
+
+            # --- 2. Análisis de Distribución del Inventario ---
+            st.subheader("Inventory Distribution by Value (Cost)")
+            dist_cols = st.columns(2)
+
+            with dist_cols[0]:
+                if 'BRAND' in df_stock.columns:
+                    value_by_brand = df_stock.groupby('BRAND')['Inventory Value'].sum().reset_index().sort_values('Inventory Value', ascending=False)
+                    fig_value_brand = px.bar(value_by_brand.head(15), x='BRAND', y='Inventory Value', title='Top 15 Brands by Inventory Value')
+                    st.plotly_chart(fig_value_brand, use_container_width=True)
+                else:
+                    st.info("'BRAND' column not available for analysis.")
+
+            with dist_cols[1]:
+                if 'SPORT' in df_stock.columns:
+                    value_by_sport = df_stock.groupby('SPORT')['Inventory Value'].sum().reset_index().sort_values('Inventory Value', ascending=False)
+                    fig_value_sport = px.bar(value_by_sport.head(15), x='SPORT', y='Inventory Value', title='Top 15 Sports by Inventory Value')
+                    st.plotly_chart(fig_value_sport, use_container_width=True)
+                else:
+                    st.info("'SPORT' column not available for analysis.")
+            
+            st.divider()
+
+            # --- 3. Análisis de Rendimiento y Riesgos ---
+            st.subheader("Inventory Performance and Risk Analysis")
+            risk_cols = st.columns(2)
+
+            # Slow Movers
+            with risk_cols[0]:
+                st.markdown("#### 🐢 Top 15 Slow Movers")
+                slow_movers = df_stock[df_stock['Total Stock (QTY)'] > 0].sort_values('Stock Days on Hand', ascending=False)
+                st.dataframe(
+                    slow_movers[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].head(15),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Inventory Value": st.column_config.NumberColumn(format="$%.2f")
+                    }
+                )
+                st.caption("Products with the highest stock days (potential overstock).")
+            
+            # Fast Movers
+            with risk_cols[1]:
+                st.markdown("#### 🐇 Top 15 Fast Movers")
+                fast_movers = df_stock[df_stock['Stock Days on Hand'] > 0].sort_values('Stock Days on Hand', ascending=True)
+                st.dataframe(
+                    fast_movers[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].head(15),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Inventory Value": st.column_config.NumberColumn(format="$%.2f")
+                    }
+                )
+                st.caption("Products with the lowest stock days (potential risk of stockout).")
+            
+            st.divider()
+            
+            # Obsolete Stock
+            st.markdown("#### ⚠️ Potentially Obsolete Stock")
+            obsolete_threshold = 365
+            obsolete_stock = df_stock[df_stock['Stock Days on Hand'] > obsolete_threshold]
+            st.dataframe(
+                obsolete_stock[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].sort_values('Stock Days on Hand', ascending=False),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Inventory Value": st.column_config.NumberColumn(format="$%.2f")
+                }
+            )
+            st.caption(f"Products with more than {obsolete_threshold} days in inventory. Consider for liquidation.")
 
     # --- SIMULATOR TAB ---
     with tab_simulator:
@@ -1349,15 +1518,15 @@ else:
                         kpi_sim_row1_b2c[0].metric("Avg. Gross Margin", 
                                                  f"{avg_sim_gross_margin_b2c:.2f}%" if pd.notna(avg_sim_gross_margin_b2c) else "N/A",
                                                  delta=get_delta_string_for_metric(avg_sim_gross_margin_b2c, avg_current_gross_margin_b2c, kind="percentage"),
-                                                 help="Simulated Average: ((New RC Price - Unit Cost) / New RC Price) * 100")
+                                                 help="📊 Average Gross Margin: ((New Price - Unit Cost) / New Price) × 100. Indicates what percentage of the selling price is profit after covering costs.")
                         kpi_sim_row1_b2c[1].metric("Avg. Markup on Cost", 
                                                  f"{avg_sim_markup_cost_b2c:.2f}%" if pd.notna(avg_sim_markup_cost_b2c) else "N/A",
                                                  delta=get_delta_string_for_metric(avg_sim_markup_cost_b2c, avg_current_markup_cost_b2c, kind="percentage"),
-                                                 help="Simulated Average: ((New RC Price - Unit Cost) / Unit Cost) * 100")
+                                                 help="📊 Average Markup on Cost: ((New Price - Unit Cost) / Unit Cost) × 100. Indicates how much the price is increased relative to the cost.")
                         kpi_sim_row1_b2c[2].metric("Avg. Markup on MAP", 
                                                  f"{avg_sim_markup_map_b2c:.2f}%" if pd.notna(avg_sim_markup_map_b2c) else "N/A",
                                                  delta=get_delta_string_for_metric(avg_sim_markup_map_b2c, avg_current_markup_map_b2c, kind="percentage"),
-                                                 help="Simulated Average: ((New RC Price - MAP) / MAP) * 100")
+                                                 help="📊 Average Markup on MAP: ((New Price - MAP) / MAP) × 100. Indicates how much the price is above or below the MAP.")
                         
                         kpi_sim_row2_b2c = st.columns(4)
                         # Calculate deltas for rule compliance counts
@@ -1367,13 +1536,17 @@ else:
                         # delta_overall_compliant_b2c = sim_overall_compliant_b2c - current_overall_compliant_b2c if pd.notna(sim_overall_compliant_b2c) and pd.notna(current_overall_compliant_b2c) else None
 
                         kpi_sim_row2_b2c[0].metric(f"{b2c_display_rule_names[0]} Met", f"{sim_rule_1_met_b2c:,}",
-                                                 delta=get_delta_string_for_metric(sim_rule_1_met_b2c, current_rule_1_met_b2c, kind="count"))
+                                                 delta=get_delta_string_for_metric(sim_rule_1_met_b2c, current_rule_1_met_b2c, kind="count"),
+                                                 help="🎯 Rule 1: Products where New Price ≤ Minimum B2C Competitor Price. Ensures price competitiveness.")
                         kpi_sim_row2_b2c[1].metric(f"{b2c_display_rule_names[1]} Met", f"{sim_rule_2_met_b2c:,}",
-                                                 delta=get_delta_string_for_metric(sim_rule_2_met_b2c, current_rule_2_met_b2c, kind="count"))
+                                                 delta=get_delta_string_for_metric(sim_rule_2_met_b2c, current_rule_2_met_b2c, kind="count"),
+                                                 help="🎯 Rule 2: Products where New Price ≥ MAP. Complies with minimum advertised price policies.")
                         kpi_sim_row2_b2c[2].metric(f"{b2c_display_rule_names[2]} Met", f"{sim_rule_3_met_b2c:,}",
-                                                 delta=get_delta_string_for_metric(sim_rule_3_met_b2c, current_rule_3_met_b2c, kind="count"))
+                                                 delta=get_delta_string_for_metric(sim_rule_3_met_b2c, current_rule_3_met_b2c, kind="count"),
+                                                 help="🎯 Rule 3: Products where Gross Margin ≥ 20%. Ensures minimum profitability.")
                         kpi_sim_row2_b2c[3].metric(f"{b2c_display_rule_names[3]} Met", f"{sim_overall_compliant_b2c:,}",
-                                                 delta=get_delta_string_for_metric(sim_overall_compliant_b2c, current_overall_compliant_b2c, kind="count"))
+                                                 delta=get_delta_string_for_metric(sim_overall_compliant_b2c, current_overall_compliant_b2c, kind="count"),
+                                                 help="🎯 Overall Compliance: Products that meet ALL applicable rules (1, 2, and 3).")
                     st.markdown("--- ") # Visual separator after KPIs
 
                     # Identify which of the original rule columns are actually present in the selected df for styling
@@ -1533,15 +1706,15 @@ else:
                             kpi_sim_row1_b2b[0].metric("Avg. Gross Margin B2B", 
                                                      f"{avg_sim_gross_margin_b2b:.2f}%" if pd.notna(avg_sim_gross_margin_b2b) else "N/A",
                                                      delta=get_delta_string_for_metric(avg_sim_gross_margin_b2b, avg_current_gross_margin_b2b, kind="percentage"),
-                                                     help="Simulated Average: ((New RC B2B Price - Unit Cost) / New RC B2B Price) * 100")
+                                                     help="📊 Average B2B Gross Margin: ((New B2B Price - Unit Cost) / New B2B Price) × 100. Indicates what percentage of the B2B price is profit.")
                             kpi_sim_row1_b2b[1].metric("Avg. Markup on Cost B2B", 
                                                      f"{avg_sim_markup_cost_b2b:.2f}%" if pd.notna(avg_sim_markup_cost_b2b) else "N/A",
                                                      delta=get_delta_string_for_metric(avg_sim_markup_cost_b2b, avg_current_markup_cost_b2b, kind="percentage"),
-                                                     help="Simulated Average: ((New RC B2B Price - Unit Cost) / Unit Cost) * 100")
+                                                     help="📊 Average B2B Markup on Cost: ((New B2B Price - Unit Cost) / Unit Cost) × 100. B2B price increase relative to cost.")
                             kpi_sim_row1_b2b[2].metric("Avg. Markup on MAP B2B", 
                                                      f"{avg_sim_markup_map_b2b:.2f}%" if pd.notna(avg_sim_markup_map_b2b) else "N/A",
                                                      delta=get_delta_string_for_metric(avg_sim_markup_map_b2b, avg_current_markup_map_b2b, kind="percentage"),
-                                                     help="Simulated Average: ((New RC B2B Price - MAP) / MAP) * 100")
+                                                     help="📊 Average B2B Markup on MAP: ((New B2B Price - MAP) / MAP) × 100. B2B price difference relative to MAP.")
 
                             kpi_sim_row2_b2b = st.columns(4)
                             # Calculate deltas for B2B rule compliance counts
@@ -1551,13 +1724,17 @@ else:
                             # delta_overall_compliant_b2b = sim_overall_compliant_b2b - current_overall_compliant_b2b if pd.notna(sim_overall_compliant_b2b) and pd.notna(current_overall_compliant_b2b) else None
 
                             kpi_sim_row2_b2b[0].metric(f"{b2b_display_rule_names[0]} Met", f"{sim_rule_1_met_b2b:,}",
-                                                     delta=get_delta_string_for_metric(sim_rule_1_met_b2b, current_rule_1_met_b2b, kind="count"))
+                                                     delta=get_delta_string_for_metric(sim_rule_1_met_b2b, current_rule_1_met_b2b, kind="count"),
+                                                     help="🎯 Rule 1 B2B: Products where New B2B Price ≤ Minimum B2B Competitor Price (FROMUTH). Ensures competitiveness in the B2B channel.")
                             kpi_sim_row2_b2b[1].metric(f"{b2b_display_rule_names[1]} Met", f"{sim_rule_2_met_b2b:,}",
-                                                     delta=get_delta_string_for_metric(sim_rule_2_met_b2b, current_rule_2_met_b2b, kind="count"))
+                                                     delta=get_delta_string_for_metric(sim_rule_2_met_b2b, current_rule_2_met_b2b, kind="count"),
+                                                     help="🎯 Rule 2 B2B: Products where New B2B Price ≥ MAP. Complies with minimum price policies in the B2B channel.")
                             kpi_sim_row2_b2b[2].metric(f"{b2b_display_rule_names[2]} Met", f"{sim_rule_3_met_b2b:,}",
-                                                     delta=get_delta_string_for_metric(sim_rule_3_met_b2b, current_rule_3_met_b2b, kind="count"))
+                                                     delta=get_delta_string_for_metric(sim_rule_3_met_b2b, current_rule_3_met_b2b, kind="count"),
+                                                     help="🎯 Rule 3 B2B: Products where B2B Gross Margin ≥ 20%. Ensures minimum profitability in the B2B channel.")
                             kpi_sim_row2_b2b[3].metric(f"{b2b_display_rule_names[3]} Met", f"{sim_overall_compliant_b2b:,}",
-                                                     delta=get_delta_string_for_metric(sim_overall_compliant_b2b, current_overall_compliant_b2b, kind="count"))
+                                                     delta=get_delta_string_for_metric(sim_overall_compliant_b2b, current_overall_compliant_b2b, kind="count"),
+                                                     help="🎯 Overall B2B Compliance: Products that meet ALL applicable B2B rules (1, 2, and 3).")
                         st.markdown("--- ") # Visual separator after KPIs
 
                         active_b2b_original_rule_cols = [col for col in b2b_original_rule_cols if col in df_b2b_for_styling.columns]
@@ -1614,12 +1791,12 @@ else:
                             
         # --- Consolidated Scenario Analysis Section ---
         st.markdown("--- ") # Visual Separator
-        st.header("📊 Análisis de Escenario Consolidado")
-        st.caption("Aquí se muestran los productos que has añadido al escenario con sus respectivos descuentos aplicados. Puedes eliminar lotes individualmente o limpiar todo el escenario.")
+        st.header("📊 Consolidated Scenario Analysis")
+        st.caption("Here are the products you have added to the scenario with their respective discounts applied. You can remove individual batches or clear the entire scenario.")
 
         # --- KPIs Consolidados del Escenario ---
         if st.session_state.staged_scenario_items: # Only show if there are items
-            with st.expander("📊 KPIs Agregados del Escenario Completo", expanded=True):
+            with st.expander("📊 Aggregated KPIs for the Entire Scenario", expanded=True):
                 df_scenario_all_items = pd.concat(st.session_state.staged_scenario_items, ignore_index=True).copy()
 
                 cost_col = 'Unit Cost'
@@ -1779,40 +1956,41 @@ else:
                     scenario_counts[f'New {rule_base_name} Met'] = (df_scenario_all_items[f'Effective New {rule_base_name} Met'] == True).sum()
 
                 # --- Display Aggregated Scenario KPIs ---
-                st.subheader("KPIs Agregados del Escenario")
+                st.subheader("Aggregated Scenario KPIs")
 
                 total_items_in_scenario = len(df_scenario_all_items)
-                st.metric("Total de Productos en Escenario", f"{total_items_in_scenario:,}")
+                st.metric("Total Items in Scenario", f"{total_items_in_scenario:,}",
+                         help="📊 Total number of products included in the consolidated scenario, combining all added B2C and B2B batches.")
 
                 # --- Financial KPIs ---
                 kpi_cols_finance = st.columns(3)
                 
-                kpi_cols_finance[0].metric("Avg. Margen Bruto",
+                kpi_cols_finance[0].metric("Avg. Gross Margin",
                                            f"{avg_scenario_new_gross_margin:.2f}%" if pd.notna(avg_scenario_new_gross_margin) else "N/A",
                                            delta=get_delta_string_for_metric(avg_scenario_new_gross_margin, avg_scenario_current_gross_margin, kind="percentage"),
-                                           help="Promedio del Margen Bruto ((Precio Efectivo - Costo) / Precio Efectivo) para todos los items del escenario. Delta vs. estado actual.")
+                                           help="📊 Consolidated Gross Margin: ((Effective Price - Cost) / Effective Price) × 100. Average for ALL products in the scenario (B2C and B2B). Delta vs. current state.")
 
-                kpi_cols_finance[1].metric("Avg. Markup s/Costo",
+                kpi_cols_finance[1].metric("Avg. Markup on Cost",
                                            f"{avg_scenario_new_markup_cost:.2f}%" if pd.notna(avg_scenario_new_markup_cost) else "N/A",
                                            delta=get_delta_string_for_metric(avg_scenario_new_markup_cost, avg_scenario_current_markup_cost, kind="percentage"),
-                                           help="Promedio del Markup sobre Costo ((Precio Efectivo - Costo) / Costo) para todos los items del escenario. Delta vs. estado actual.")
+                                           help="📊 Consolidated Markup on Cost: ((Effective Price - Cost) / Cost) × 100. Average for ALL products in the scenario. Delta vs. current state.")
 
-                kpi_cols_finance[2].metric("Avg. Markup s/MAP",
+                kpi_cols_finance[2].metric("Avg. Markup on MAP",
                                            f"{avg_scenario_new_markup_map:.2f}%" if pd.notna(avg_scenario_new_markup_map) else "N/A",
                                            delta=get_delta_string_for_metric(avg_scenario_new_markup_map, avg_scenario_current_markup_map, kind="percentage"),
-                                           help="Promedio del Markup sobre MAP ((Precio Efectivo - MAP) / MAP) para todos los items del escenario. Delta vs. estado actual.")
+                                           help="📊 Consolidated Markup on MAP: ((Effective Price - MAP) / MAP) × 100. Average for ALL products in the scenario. Delta vs. current state.")
 
                 st.markdown("---")
-                st.markdown("##### Cumplimiento de Reglas (Cantidad de Productos)")
+                st.markdown("##### Rule Compliance (Number of Products)")
 
                 # --- Rule Compliance KPIs ---
                 kpi_cols_rules = st.columns(4)
 
                 rules_display_names = {
-                    'Rule 1': 'Regla 1: vs Comp.',
-                    'Rule 2': 'Regla 2: vs MAP',
-                    'Rule 3': 'Regla 3: Margen',
-                    'Overall Compliant': 'Cumplimiento General'
+                    'Rule 1': 'Rule 1: vs Comp.',
+                    'Rule 2': 'Rule 2: vs MAP',
+                    'Rule 3': 'Rule 3: Margin',
+                    'Overall Compliant': 'Overall Compliance'
                 }
                 
                 rule_keys_for_display = ['Rule 1', 'Rule 2', 'Rule 3', 'Overall Compliant']
@@ -1820,17 +1998,27 @@ else:
                 for i, rule_key in enumerate(rule_keys_for_display):
                     current_met = scenario_counts.get(f'Current {rule_key} Met', 0)
                     new_met = scenario_counts.get(f'New {rule_key} Met', 0)
+                    
+                    # Define help text for each rule
+                    rule_help_texts = {
+                        'Rule 1': "🎯 Consolidated Rule 1: Products (B2C + B2B) where price ≤ respective minimum competitor price. Ensures overall competitiveness.",
+                        'Rule 2': "🎯 Consolidated Rule 2: Products (B2C + B2B) where price ≥ MAP. Complies with minimum advertised price policies.",
+                        'Rule 3': "🎯 Consolidated Rule 3: Products (B2C + B2B) where gross margin ≥ 20%. Ensures minimum overall profitability.",
+                        'Overall Compliant': "🎯 Consolidated Overall Compliance: Products (B2C + B2B) that meet ALL applicable rules."
+                    }
+                    
                     kpi_cols_rules[i].metric(f"{rules_display_names[rule_key]} Met",
                                               f"{new_met:,}",
-                                              delta=get_delta_string_for_metric(new_met, current_met, kind="count"))
+                                              delta=get_delta_string_for_metric(new_met, current_met, kind="count"),
+                                              help=rule_help_texts.get(rule_key, "Business rule compliance"))
 
         # Moved the message for empty scenario here, so it appears if the expander is not shown
         if not st.session_state.staged_scenario_items: 
-            st.info("No hay productos en el escenario. Añade productos desde las vistas previas B2C o B2B.")
+            st.info("There are no products in the scenario. Add products from the B2C or B2B previews.")
         # Display each staged lot (moved below the aggregated KPIs expander)
         if st.session_state.staged_scenario_items:           
             # Button to clear the entire scenario
-            if st.button("🗑️ Limpiar Todo el Escenario", key="clear_scenario"):
+            if st.button("🗑️ Clear Entire Scenario", key="clear_scenario"):
                 st.session_state.staged_scenario_items = []
                 st.session_state.staged_scenario_kpis = {}
                 st.rerun() # Rerun to reflect the cleared state immediately
@@ -1904,7 +2092,7 @@ else:
                 
                 df_display_lot = lot_df[unique_cols_for_scenario_lot_display].copy() # Work with a copy
                 
-                with st.expander(f"Lote {i+1}: {lot_type} ({len(df_display_lot)} productos) con {applied_discount}% de descuento", expanded=False):
+                with st.expander(f"Batch {i+1}: {lot_type} ({len(df_display_lot)} products) with {applied_discount}% discount", expanded=False):
                     styler_lot = format_and_style_rules_df(df_display_lot, [col for col in rule_cols_original if col in df_display_lot.columns])
                     
                     column_config_lot = {original: st.column_config.TextColumn(new_display_name) 
@@ -1933,7 +2121,7 @@ else:
 
                     st.dataframe(styler_lot, use_container_width=True, hide_index=True, column_config=column_config_lot)
                     
-                    if st.button(f"Eliminar Lote {i+1}", key=f"delete_lot_{i}"):
+                    if st.button(f"Delete Batch {i+1}", key=f"delete_lot_{i}"):
                         st.session_state.staged_scenario_items.pop(i)
                         st.rerun() # Rerun to update the display
                 scenario_df_list.append(lot_df)
