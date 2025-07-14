@@ -153,6 +153,24 @@ def get_unique_options_dashboard(df_source, column_name):
     
     return sorted(unique_strings)
 
+# Helper function to clean DataFrame for Arrow serialization
+def clean_dataframe_for_arrow(df):
+    """Clean DataFrame to avoid Arrow serialization issues"""
+    df_clean = df.copy()
+    
+    # Convert mixed-type columns to string to avoid Arrow conversion issues
+    problematic_columns = ['UPC / EAN', 'EAN', 'SKU']
+    for col in problematic_columns:
+        if col in df_clean.columns:
+            df_clean[col] = df_clean[col].astype(str)
+    
+    # Replace 'nan' string with empty string for better display
+    for col in df_clean.columns:
+        if df_clean[col].dtype == 'object':
+            df_clean[col] = df_clean[col].replace('nan', '')
+    
+    return df_clean
+
 # --- Streamlit App ---
 st.set_page_config(layout="wide", page_title="Pricing & Competition Dashboard")
 st.title("📊 Pricing & Competition Dashboard")
@@ -682,14 +700,15 @@ else:
                     return '' # No special style for N/A
 
             if not df_for_ui.empty:
-                if 'RC Cheaper?' in df_for_ui.columns:
+                df_for_ui_clean = clean_dataframe_for_arrow(df_for_ui)
+                if 'RC Cheaper?' in df_for_ui_clean.columns:
                     st.dataframe(
-                        df_for_ui.style.applymap(style_rc_cheaper, subset=['RC Cheaper?']),
+                        df_for_ui_clean.style.map(style_rc_cheaper, subset=['RC Cheaper?']),
                         use_container_width=True,
                         hide_index=True
                     )
                 else: # Display without styling if 'RC Cheaper?' column isn't in the final UI df
-                    st.dataframe(df_for_ui, use_container_width=True, hide_index=True)
+                    st.dataframe(df_for_ui_clean, use_container_width=True, hide_index=True)
             else:
                 st.info("No data to display in the main table based on current filters.")
 
@@ -726,7 +745,8 @@ else:
             st.warning(f"Low Stock ({len(df_low_stock)} items < {LOW_STOCK_DAYS} days)")
             if not df_low_stock.empty:
                  # Reverted .head(50) and removed height limit
-                 st.dataframe(df_low_stock[['BRAND', 'ITEM NAME', 'Stock Days on Hand']].sort_values('Stock Days on Hand'), use_container_width=True, hide_index=True)
+                 df_low_stock_display = clean_dataframe_for_arrow(df_low_stock[['BRAND', 'ITEM NAME', 'Stock Days on Hand']].sort_values('Stock Days on Hand'))
+                 st.dataframe(df_low_stock_display, use_container_width=True, hide_index=True)
             else:
                 st.info("No items with low stock days.")
             st.divider() # Add divider between alerts
@@ -737,7 +757,8 @@ else:
             st.error(f"Price Below Cost ({len(df_below_cost)} items)")
             if not df_below_cost.empty:
                 # Removed height=200
-                st.dataframe(df_below_cost[['BRAND', 'ITEM NAME', 'Unit Cost', 'RACKET CENTRAL B2C']], use_container_width=True, hide_index=True)
+                df_below_cost_display = clean_dataframe_for_arrow(df_below_cost[['BRAND', 'ITEM NAME', 'Unit Cost', 'RACKET CENTRAL B2C']])
+                st.dataframe(df_below_cost_display, use_container_width=True, hide_index=True)
             else:
                 st.info("No items priced below cost.")
 
@@ -847,12 +868,14 @@ else:
                     st.markdown("**Detailed Price Comparison:**")
                     st.caption(f"'{rc_price_col}' is our price. 'Diff vs [Competitor]' shows '{rc_price_col}' - '[Competitor Price]'. Negative values mean '{rc_price_col}' is cheaper.")
                     # Display the potentially filtered DataFrame
-                    st.dataframe(df_comparison.drop(columns=[col for col in df_comparison.columns if 'Diff vs' in col], errors='ignore'), use_container_width=True, hide_index=True) # Display without diff columns for cleanliness here, diffs used in metrics
+                    df_comparison_display = clean_dataframe_for_arrow(df_comparison.drop(columns=[col for col in df_comparison.columns if 'Diff vs' in col], errors='ignore'))
+                    st.dataframe(df_comparison_display, use_container_width=True, hide_index=True) # Display without diff columns for cleanliness here, diffs used in metrics
 
 
         # --- Display Original Data (Optional Expander) ---
         with st.expander("Show Original Full Data (Unfiltered)"):
-           st.dataframe(df_original, use_container_width=True, hide_index=True)
+           df_original_clean = clean_dataframe_for_arrow(df_original)
+           st.dataframe(df_original_clean, use_container_width=True, hide_index=True)
 
     # --- STOCK ANALYSIS TAB ---
     with tab_stock_analysis:
@@ -955,8 +978,9 @@ else:
             with risk_cols[0]:
                 st.markdown("#### 🐢 Top 15 Slow Movers")
                 slow_movers = df_stock[df_stock['Total Stock (QTY)'] > 0].sort_values('Stock Days on Hand', ascending=False)
+                slow_movers_display = clean_dataframe_for_arrow(slow_movers[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].head(15))
                 st.dataframe(
-                    slow_movers[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].head(15),
+                    slow_movers_display,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
@@ -969,8 +993,9 @@ else:
             with risk_cols[1]:
                 st.markdown("#### 🐇 Top 15 Fast Movers")
                 fast_movers = df_stock[df_stock['Stock Days on Hand'] > 0].sort_values('Stock Days on Hand', ascending=True)
+                fast_movers_display = clean_dataframe_for_arrow(fast_movers[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].head(15))
                 st.dataframe(
-                    fast_movers[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].head(15),
+                    fast_movers_display,
                     use_container_width=True,
                     hide_index=True,
                     column_config={
@@ -985,8 +1010,9 @@ else:
             st.markdown("#### ⚠️ Potentially Obsolete Stock")
             obsolete_threshold = 365
             obsolete_stock = df_stock[df_stock['Stock Days on Hand'] > obsolete_threshold]
+            obsolete_stock_display = clean_dataframe_for_arrow(obsolete_stock[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].sort_values('Stock Days on Hand', ascending=False))
             st.dataframe(
-                obsolete_stock[['ITEM NAME', 'BRAND', 'Stock Days on Hand', 'Total Stock (QTY)', 'Inventory Value']].sort_values('Stock Days on Hand', ascending=False),
+                obsolete_stock_display,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -1179,18 +1205,18 @@ else:
 
                 # --- Business Rule Checks ---
                 # Rule 1: New price <= Min_Competitor_Price
-                df_results['RC Meets Rule 1'] = df_results['New RC Price'] <= df_results['Min B2C Competitor Price']
+                df_results['RC Meets Rule 1'] = (df_results['New RC Price'] <= df_results['Min B2C Competitor Price']).astype('object')
                 df_results.loc[df_results['Min B2C Competitor Price'].isna(), 'RC Meets Rule 1'] = "N/A (No B2C Comp)"
 
-                df_results['RC B2B Meets Rule 1'] = df_results['New RC B2B Price'] <= df_results['Min B2B Competitor Price']
+                df_results['RC B2B Meets Rule 1'] = (df_results['New RC B2B Price'] <= df_results['Min B2B Competitor Price']).astype('object')
                 df_results.loc[df_results['Min B2B Competitor Price'].isna(), 'RC B2B Meets Rule 1'] = "N/A (No B2B Comp)"
 
 
                 # Rule 2: New price >= MAP
                 map_col = 'MAP'
                 if map_col in df_results.columns:
-                    df_results['RC Meets Rule 2'] = df_results['New RC Price'] >= df_results[map_col]
-                    df_results['RC B2B Meets Rule 2'] = df_results['New RC B2B Price'] >= df_results[map_col]
+                    df_results['RC Meets Rule 2'] = (df_results['New RC Price'] >= df_results[map_col]).astype('object')
+                    df_results['RC B2B Meets Rule 2'] = (df_results['New RC B2B Price'] >= df_results[map_col]).astype('object')
                     # Handle cases where MAP is NaN -> rule could be considered met or N/A. For now, if MAP is NaN, comparison is False.
                     df_results.loc[df_results[map_col].isna(), ['RC Meets Rule 2', 'RC B2B Meets Rule 2']] = "N/A (No MAP)"
                 else:
@@ -1200,8 +1226,8 @@ else:
 
                 # Rule 3: Margin >= 20% ( (New Price - Cost) / Cost >= 0.20 )
                 # Rule 3 is actually: New Margin (Gross Margin) >= 20%
-                df_results['RC Meets Rule 3'] = df_results['New RC Margin (%)'] >= 20.0
-                df_results['RC B2B Meets Rule 3'] = df_results['New RC B2B Margin (%)'] >= 20.0
+                df_results['RC Meets Rule 3'] = (df_results['New RC Margin (%)'] >= 20.0).astype('object')
+                df_results['RC B2B Meets Rule 3'] = (df_results['New RC B2B Margin (%)'] >= 20.0).astype('object')
                 if cost_col not in df_results.columns: # Should be if 'New RC Margin (%)' is NA, but cost check is a proxy
                      df_results['RC Meets Rule 3'] = "N/A (No Cost Col for Margin)" # Or "N/A (Margin Not Calc)"
                      df_results['RC B2B Meets Rule 3'] = "N/A (No Cost Col for Margin)"
@@ -1209,43 +1235,43 @@ else:
 
                 # --- START: Current State Rule Checks ---
                 # Current Rule 1: Original price <= Min_Competitor_Price
-                df_results['Current RC Meets Rule 1'] = pd.NA
+                df_results['Current RC Meets Rule 1'] = pd.Series(dtype='object', index=df_results.index)
                 if RC_PRICE_COLUMN in df_results.columns:
-                    df_results['Current RC Meets Rule 1'] = df_results[RC_PRICE_COLUMN] <= df_results['Min B2C Competitor Price']
+                    df_results['Current RC Meets Rule 1'] = (df_results[RC_PRICE_COLUMN] <= df_results['Min B2C Competitor Price']).astype('object')
                     df_results.loc[df_results['Min B2C Competitor Price'].isna(), 'Current RC Meets Rule 1'] = "N/A (No B2C Comp)"
 
-                df_results['Current RC B2B Meets Rule 1'] = pd.NA
+                df_results['Current RC B2B Meets Rule 1'] = pd.Series(dtype='object', index=df_results.index)
                 if RC_B2B_PRICE_COLUMN in df_results.columns:
-                    df_results['Current RC B2B Meets Rule 1'] = df_results[RC_B2B_PRICE_COLUMN] <= df_results['Min B2B Competitor Price']
+                    df_results['Current RC B2B Meets Rule 1'] = (df_results[RC_B2B_PRICE_COLUMN] <= df_results['Min B2B Competitor Price']).astype('object')
                     df_results.loc[df_results['Min B2B Competitor Price'].isna(), 'Current RC B2B Meets Rule 1'] = "N/A (No B2B Comp)"
 
                 # Current Rule 2: Original price >= MAP
                 if map_col in df_results.columns:
-                    df_results['Current RC Meets Rule 2'] = pd.NA
+                    df_results['Current RC Meets Rule 2'] = pd.Series(dtype='object', index=df_results.index)
                     if RC_PRICE_COLUMN in df_results.columns:
-                        df_results['Current RC Meets Rule 2'] = df_results[RC_PRICE_COLUMN] >= df_results[map_col]
+                        df_results['Current RC Meets Rule 2'] = (df_results[RC_PRICE_COLUMN] >= df_results[map_col]).astype('object')
                         df_results.loc[df_results[map_col].isna() & df_results[RC_PRICE_COLUMN].notna(), 'Current RC Meets Rule 2'] = "N/A (No MAP)"
                     
-                    df_results['Current RC B2B Meets Rule 2'] = pd.NA
+                    df_results['Current RC B2B Meets Rule 2'] = pd.Series(dtype='object', index=df_results.index)
                     if RC_B2B_PRICE_COLUMN in df_results.columns:
-                        df_results['Current RC B2B Meets Rule 2'] = df_results[RC_B2B_PRICE_COLUMN] >= df_results[map_col]
+                        df_results['Current RC B2B Meets Rule 2'] = (df_results[RC_B2B_PRICE_COLUMN] >= df_results[map_col]).astype('object')
                         df_results.loc[df_results[map_col].isna() & df_results[RC_B2B_PRICE_COLUMN].notna(), 'Current RC B2B Meets Rule 2'] = "N/A (No MAP)"
                 else:
                     df_results['Current RC Meets Rule 2'] = "N/A (No MAP Col)"
                     df_results['Current RC B2B Meets Rule 2'] = "N/A (No MAP Col)"
 
                 # Current Rule 3: Current Margin >= 20%
-                df_results['Current RC Meets Rule 3'] = pd.NA
+                df_results['Current RC Meets Rule 3'] = pd.Series(dtype='object', index=df_results.index)
                 if 'Current RC Margin (%)' in df_results.columns:
-                    df_results['Current RC Meets Rule 3'] = df_results['Current RC Margin (%)'] >= 20.0
+                    df_results['Current RC Meets Rule 3'] = (df_results['Current RC Margin (%)'] >= 20.0).astype('object')
                     # If Current RC Margin is NA (e.g. due to no cost), this comparison results in NA, which is fine for styling.
                     # We can make it explicit if needed for the check_current_overall_compliance function.
                     df_results.loc[df_results['Current RC Margin (%)'].isna(), 'Current RC Meets Rule 3'] = "N/A (Margin Not Calc)"
 
 
-                df_results['Current RC B2B Meets Rule 3'] = pd.NA
+                df_results['Current RC B2B Meets Rule 3'] = pd.Series(dtype='object', index=df_results.index)
                 if 'Current RC B2B Margin (%)' in df_results.columns:
-                    df_results['Current RC B2B Meets Rule 3'] = df_results['Current RC B2B Margin (%)'] >= 20.0
+                    df_results['Current RC B2B Meets Rule 3'] = (df_results['Current RC B2B Margin (%)'] >= 20.0).astype('object')
                     df_results.loc[df_results['Current RC B2B Margin (%)'].isna(), 'Current RC B2B Meets Rule 3'] = "N/A (Margin Not Calc)"
                 # --- END: Current State Rule Checks ---
 
@@ -1424,7 +1450,7 @@ else:
                     final_columns_to_style_in_df = [col for col in rule_column_names_to_style if col in df_for_styling.columns]
                     
                     if final_columns_to_style_in_df:
-                        return df_for_styling.style.applymap(style_rule_cell, subset=final_columns_to_style_in_df)
+                        return df_for_styling.style.map(style_rule_cell, subset=final_columns_to_style_in_df)
                     return df_for_styling.style # Should not happen if rule_column_names_to_style is not empty and columns exist
 
                 # --- B2C Simulation Table ---
@@ -1578,6 +1604,8 @@ else:
                     if 'Unit Cost' in df_b2c_for_display_table.columns:
                         column_config_b2c['Unit Cost'] = st.column_config.NumberColumn(format="%.2f")
 
+                    df_b2c_for_display_table_clean = clean_dataframe_for_arrow(df_b2c_for_display_table)
+                    b2c_styler = format_and_style_rules_df(df_b2c_for_display_table_clean, active_b2c_original_rule_cols)
                     st.dataframe(b2c_styler, use_container_width=True, hide_index=True, column_config=column_config_b2c)
 
                     # Button to add B2C results to scenario
@@ -1765,6 +1793,8 @@ else:
                         if 'Unit Cost' in df_b2b_for_display_table.columns:
                             column_config_b2b['Unit Cost'] = st.column_config.NumberColumn(format="%.2f")
                         
+                        df_b2b_for_display_table_clean = clean_dataframe_for_arrow(df_b2b_for_display_table)
+                        b2b_styler = format_and_style_rules_df(df_b2b_for_display_table_clean, active_b2b_original_rule_cols)
                         st.dataframe(b2b_styler, use_container_width=True, hide_index=True, column_config=column_config_b2b)
 
                         # Button to add B2B results to scenario
@@ -2119,6 +2149,8 @@ else:
                     if 'Applied Discount (%)' in df_display_lot.columns:
                         column_config_lot['Applied Discount (%)'] = st.column_config.NumberColumn(format="%.1f%%")
 
+                    df_display_lot_clean = clean_dataframe_for_arrow(df_display_lot)
+                    styler_lot = format_and_style_rules_df(df_display_lot_clean, [col for col in rule_cols_original if col in df_display_lot_clean.columns])
                     st.dataframe(styler_lot, use_container_width=True, hide_index=True, column_config=column_config_lot)
                     
                     if st.button(f"Delete Batch {i+1}", key=f"delete_lot_{i}"):
