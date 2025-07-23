@@ -2,6 +2,7 @@ import streamlit as st
 import gspread
 import pandas as pd
 import plotly.express as px
+import numpy as np
 
 # --- Constants ---
 # Google Sheets Configuration (Copied from test_conection_gsheet.py)
@@ -106,6 +107,36 @@ def fetch_data(_gc: gspread.Client):
                     df[col] = df[col] / 100.0
         # else: keep non-numeric, non-percentage columns as they are
         
+        # --- (Re)Calculate B2B Suggested Price with new logic ---
+        rc_b2b_price = pd.to_numeric(df.get('RACKET CENTRAL B2B'), errors='coerce')
+        fromuth_price = pd.to_numeric(df.get('FROMUTH'), errors='coerce')
+        map_price = pd.to_numeric(df.get('MAP'), errors='coerce')
+        unit_cost = pd.to_numeric(df.get('Unit Cost'), errors='coerce')
+
+        conditions = [
+            rc_b2b_price.notna() & fromuth_price.notna(),
+            rc_b2b_price.notna(),
+            fromuth_price.notna(),
+            map_price.notna(),
+            unit_cost.notna()
+        ]
+
+        choices = [
+            df[['RACKET CENTRAL B2B', 'FROMUTH']].min(axis=1),
+            rc_b2b_price,
+            fromuth_price,
+            map_price,
+            unit_cost * 1.15
+        ]
+
+        df['B2B Suggested Price'] = np.select(conditions, choices, default=pd.NA)
+
+        # If 'B2B Suggested Price' is now numeric, replace 0 with NA so it shows as blank
+        if 'B2B Suggested Price' in df.columns:
+            # Ensure it's a numeric type before trying to replace, as it might not be if all values were invalid
+            if pd.api.types.is_numeric_dtype(df['B2B Suggested Price']):
+                df['B2B Suggested Price'] = df['B2B Suggested Price'].replace(0, pd.NA)
+
         # --- (Re)Calculate Marginal Contributions directly in the script ---
         # This ensures consistency and overrides any values from the sheet.
         
@@ -171,6 +202,73 @@ def clean_dataframe_for_arrow(df):
     
     return df_clean
 
+# Helper function to create numerical range filters with number inputs
+def add_range_number_inputs(df, column_name, key_suffix=""):
+    """
+    Create two number inputs for min and max range filtering.
+    This version is robust against Streamlit's rerun behavior and dynamic data filtering.
+    """
+    if column_name not in df.columns or df.empty:
+        return None, None
+        
+    numeric_values = pd.to_numeric(df[column_name], errors='coerce')
+    valid_values = numeric_values.dropna()
+    
+    if len(valid_values) == 0:
+        st.sidebar.caption(f"No data available for '{column_name}' filter.")
+        return None, None
+    
+    min_val = float(valid_values.min())
+    max_val = float(valid_values.max())
+
+    st.sidebar.markdown(f"**Filter by {column_name}**")
+    col1, col2 = st.sidebar.columns(2)
+    
+    min_widget_key = f"num_min_{column_name.replace(' ', '_').lower()}_{key_suffix}"
+    max_widget_key = f"num_max_{column_name.replace(' ', '_').lower()}_{key_suffix}"
+
+    # Initialize session state if keys don't exist
+    if min_widget_key not in st.session_state:
+        st.session_state[min_widget_key] = min_val
+    if max_widget_key not in st.session_state:
+        st.session_state[max_widget_key] = max_val
+        
+    # Before rendering, clamp session state values to the current valid range.
+    # This prevents the StreamlitValueBelowMinError when data is filtered.
+    st.session_state[min_widget_key] = max(min_val, min(max_val, st.session_state[min_widget_key]))
+    st.session_state[max_widget_key] = max(min_val, min(max_val, st.session_state[max_widget_key]))
+    
+    # Also ensure min is not greater than max in the session state
+    if st.session_state[min_widget_key] > st.session_state[max_widget_key]:
+        st.session_state[min_widget_key] = st.session_state[max_widget_key]
+
+    with col1:
+        st.number_input(
+            "Min", 
+            min_value=min_val, 
+            max_value=max_val,
+            key=min_widget_key, # Use key to bind to session state, do NOT pass 'value'
+            step=1.0 if (max_val - min_val) > 10 else 0.1
+        )
+
+    with col2:
+        st.number_input(
+            "Max", 
+            min_value=min_val,
+            max_value=max_val,
+            key=max_widget_key, # Use key to bind to session state, do NOT pass 'value'
+            step=1.0 if (max_val - min_val) > 10 else 0.1
+        )
+    
+    min_input_val = st.session_state[min_widget_key]
+    max_input_val = st.session_state[max_widget_key]
+
+    # Only consider the filter active if the user has changed from the full range
+    if min_input_val == min_val and max_input_val == max_val:
+        return None, None
+    
+    return min_input_val, max_input_val
+
 # --- Streamlit App ---
 st.set_page_config(layout="wide", page_title="Pricing & Competition Dashboard")
 st.title("📊 Pricing & Competition Dashboard")
@@ -198,6 +296,163 @@ else:
     # If it needs to be calculated, that logic would go into fetch_data or here.
     RC_B2B_PRICE_COLUMN = 'RACKET CENTRAL B2B' # Placeholder, ensure this column exists in your data source
 
+    # --- Global Sidebar Filters ---
+    st.sidebar.header("Dashboard Filters")
+    
+    # Filter summary and clear button
+    if st.sidebar.button("🗑️ Clear All Filters", help="Reset all filters to default state"):
+        # Clear all filter session state keys
+        filter_keys = [
+            "dashboard_ean", "dashboard_sku", "dashboard_item_name",
+            "dashboard_brands", "dashboard_sports", "dashboard_type1s", 
+            "dashboard_year_models", "dashboard_cooccurrence"
+        ]
+        
+        # Add numerical filter keys to the list to be cleared
+        numerical_filter_columns_for_clear = [
+            'LOWEST PRICE (B2C)', 'RACKET CENTRAL B2C', 'Unit Cost', 'MAP',
+            'Total Stock (QTY)', 'Stock Days on Hand', 'B2C Marginal Contribution (%)'
+        ]
+        for col in numerical_filter_columns_for_clear:
+            min_widget_key = f"num_min_{col.replace(' ', '_').lower()}_dashboard"
+            max_widget_key = f"num_max_{col.replace(' ', '_').lower()}_dashboard"
+            filter_keys.extend([min_widget_key, max_widget_key])
+
+        for key in filter_keys:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
+    
+    st.sidebar.divider()
+
+    # EAN Filter
+    ean_search = st.sidebar.text_input("Search by EAN:", placeholder="Enter EAN...", key="dashboard_ean")
+
+    # SKU Filter
+    sku_search = st.sidebar.text_input("Search by SKU:", placeholder="Enter SKU...", key="dashboard_sku")
+
+    # Text Search Filter
+    search_term = st.sidebar.text_input("Search by Item Name:", placeholder="Enter item name...", key="dashboard_item_name")
+
+    # Categorical Filters
+    df_filtered = df_original.copy()
+
+    if 'BRAND' in df_filtered.columns:
+        brands_options_dashboard = get_unique_options_dashboard(df_filtered, "BRAND")
+        brands_dashboard = st.sidebar.multiselect(
+            "Select Brand(s):",
+            options=brands_options_dashboard,
+            key="dashboard_brands"
+        )
+    else:
+        brands_dashboard = []
+        st.sidebar.warning("BRAND column not found in data")
+
+    if 'SPORT' in df_filtered.columns:
+        sports_options_dashboard = get_unique_options_dashboard(df_filtered, "SPORT")
+        sports_dashboard = st.sidebar.multiselect(
+            "Select Sport(s):",
+            options=sports_options_dashboard,
+            key="dashboard_sports"
+        )
+    else:
+        sports_dashboard = []
+        st.sidebar.warning("SPORT column not found in data")
+
+    if 'TYPE1' in df_filtered.columns:
+        type1_options_dashboard = get_unique_options_dashboard(df_filtered, "TYPE1")
+        type1s_dashboard = st.sidebar.multiselect(
+            "Select Type1(s):",
+            options=type1_options_dashboard,
+            key="dashboard_type1s"
+        )
+    else:
+        type1s_dashboard = []
+        st.sidebar.warning("TYPE1 column not found in data")
+    
+    if 'Year/Model' in df_filtered.columns:
+        year_model_options_dashboard = get_unique_options_dashboard(df_filtered, "Year/Model")
+        year_models_dashboard = st.sidebar.multiselect(
+            "Select Year/Model(s):",
+            options=year_model_options_dashboard,
+            key="dashboard_year_models"
+        )
+    else:
+        year_models_dashboard = []
+        st.sidebar.warning("Year/Model column not found in data")
+    
+    selected_competitors_for_coccurrence_filter = st.sidebar.multiselect(
+        "Show Products Priced by RC & Selected Competitor(s):",
+        options=[col for col in ALL_COMPETITOR_COLUMNS if col in df_filtered.columns],
+        help="Filters data to show only products where Racket Central AND at least one of the selected competitors have a price.",
+        key="dashboard_cooccurrence"
+    )
+
+    # Apply Categorical Filters
+    if brands_dashboard and 'BRAND' in df_filtered.columns:
+        brand_mask = df_filtered["BRAND"].astype(str).isin(brands_dashboard)
+        df_filtered = df_filtered[brand_mask]
+    
+    if sports_dashboard and 'SPORT' in df_filtered.columns:
+        sport_mask = df_filtered["SPORT"].astype(str).isin(sports_dashboard)
+        df_filtered = df_filtered[sport_mask]
+    
+    if type1s_dashboard and 'TYPE1' in df_filtered.columns:
+        type1_mask = df_filtered["TYPE1"].astype(str).isin(type1s_dashboard)
+        df_filtered = df_filtered[type1_mask]
+    
+    if year_models_dashboard and 'Year/Model' in df_filtered.columns:
+        year_model_mask = df_filtered["Year/Model"].astype(str).isin(year_models_dashboard)
+        df_filtered = df_filtered[year_model_mask]
+
+    df_final_filtered = df_filtered.copy()
+
+    # --- Apply Text Search Filters ---
+    if ean_search and 'EAN' in df_final_filtered.columns:
+        df_final_filtered = df_final_filtered[df_final_filtered['EAN'].astype(str).str.contains(ean_search, case=False, na=False)]
+    if sku_search and 'SKU' in df_final_filtered.columns:
+        df_final_filtered = df_final_filtered[df_final_filtered['SKU'].astype(str).str.contains(sku_search, case=False, na=False)]
+    if search_term and 'ITEM NAME' in df_final_filtered.columns:
+         df_final_filtered = df_final_filtered[df_final_filtered['ITEM NAME'].str.contains(search_term, case=False, na=False)]
+
+    # Apply Co-occurrence Filter
+    if selected_competitors_for_coccurrence_filter and RC_PRICE_COLUMN in df_final_filtered.columns:
+        rc_price_valid = pd.notna(pd.to_numeric(df_final_filtered[RC_PRICE_COLUMN], errors='coerce'))
+        
+        competitor_price_valid = pd.Series(False, index=df_final_filtered.index)
+        
+        for comp_col in selected_competitors_for_coccurrence_filter:
+            if comp_col in df_final_filtered.columns:
+                comp_prices_valid = pd.notna(pd.to_numeric(df_final_filtered[comp_col], errors='coerce'))
+                competitor_price_valid = competitor_price_valid | comp_prices_valid
+        
+        df_final_filtered = df_final_filtered[rc_price_valid & competitor_price_valid]
+
+    # Optional Numerical Filters
+    st.sidebar.subheader("Optional Numerical Filters")
+    st.sidebar.caption("These filters are applied after categorical filters")
+    
+    numerical_filter_columns = [
+        'LOWEST PRICE (B2C)', 'RACKET CENTRAL B2C', 'Unit Cost', 'MAP',
+        'Total Stock (QTY)', 'Stock Days on Hand', 'B2C Marginal Contribution (%)'
+    ]
+    
+    applied_filters = {}
+    for col in numerical_filter_columns:
+        if col in df_final_filtered.columns:
+            range_result = add_range_number_inputs(df_final_filtered, col, "dashboard")
+            if range_result and range_result != (None, None):
+                min_filter, max_filter = range_result
+                numeric_values = pd.to_numeric(df_final_filtered[col], errors='coerce')
+                # Keep only values within range. NaNs will evaluate to False and be dropped automatically by the comparison.
+                filter_mask = (numeric_values >= min_filter) & (numeric_values <= max_filter)
+                df_final_filtered = df_final_filtered[filter_mask]
+                applied_filters[col] = (min_filter, max_filter)
+    
+    if applied_filters:
+        st.sidebar.caption(f"Active numerical filters: {len(applied_filters)}")
+
+
     # --- Main Application Tabs ---
     tab_dashboard, tab_simulator, tab_stock_analysis, tab_completeness = st.tabs([
         "📊 Dashboard Overview", 
@@ -208,329 +463,61 @@ else:
 
     with tab_dashboard:
         st.header("📋 Dashboard Filters & Overview")
-        df = df_original.copy() # Work with a copy for filtering for this tab
-
-        # --- Sidebar Filters (for Dashboard Overview tab) ---
-        st.sidebar.header("Dashboard Filters")
+        # All filtering logic has been moved to the global scope before tab creation.
+        # This tab now only displays results based on the globally filtered df_final_filtered.
         
-        # Filter summary and clear button
-        if st.sidebar.button("🗑️ Clear All Filters", help="Reset all filters to default state"):
-            # Clear all filter session state keys
-            filter_keys = [
-                "dashboard_ean", "dashboard_sku", "dashboard_item_name",
-                "dashboard_brands", "dashboard_sports", "dashboard_type1s", 
-                "dashboard_year_models", "dashboard_cooccurrence"
-            ]
-            for key in filter_keys:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
+        # --- Calculate Price Comparison KPIs (B2C and B2B) ---
         
-        st.sidebar.divider()
-
-        # EAN Filter
-        ean_search = st.sidebar.text_input("Search by EAN:", placeholder="Enter EAN...", key="dashboard_ean")
-
-        # SKU Filter
-        sku_search = st.sidebar.text_input("Search by SKU:", placeholder="Enter SKU...", key="dashboard_sku")
-
-        # Text Search Filter
-        search_term = st.sidebar.text_input("Search by Item Name:", placeholder="Enter item name...", key="dashboard_item_name")
-
-        # Categorical Filters
-        # Check if required columns exist before creating filters
-        if 'BRAND' in df.columns:
-            brands_options_dashboard = get_unique_options_dashboard(df, "BRAND")
-            brands_dashboard = st.sidebar.multiselect(
-                "Select Brand(s):",
-                options=brands_options_dashboard,
-                key="dashboard_brands"
-            )
-        else:
-            brands_dashboard = []
-            st.sidebar.warning("BRAND column not found in data")
-
-        if 'SPORT' in df.columns:
-            sports_options_dashboard = get_unique_options_dashboard(df, "SPORT")
-            sports_dashboard = st.sidebar.multiselect(
-                "Select Sport(s):",
-                options=sports_options_dashboard,
-                key="dashboard_sports"
-            )
-        else:
-            sports_dashboard = []
-            st.sidebar.warning("SPORT column not found in data")
-
-        if 'TYPE1' in df.columns:
-            type1_options_dashboard = get_unique_options_dashboard(df, "TYPE1")
-            type1s_dashboard = st.sidebar.multiselect(
-                "Select Type1(s):",
-                options=type1_options_dashboard,
-                key="dashboard_type1s"
-            )
-        else:
-            type1s_dashboard = []
-            st.sidebar.warning("TYPE1 column not found in data")
+        # B2C KPIs
+        total_comparable_products_b2c = 0
+        rc_is_lowest_count_b2c = 0
+        rc_is_higher_count_b2c = 0
+        B2C_COMPETITOR_COLS = ['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'PICKLEBALL CENTRAL']
         
-        if 'Year/Model' in df.columns:
-            year_model_options_dashboard = get_unique_options_dashboard(df, "Year/Model")
-            year_models_dashboard = st.sidebar.multiselect(
-                "Select Year/Model(s):",
-                options=year_model_options_dashboard,
-                key="dashboard_year_models"
-            )
-        else:
-            year_models_dashboard = []
-            st.sidebar.warning("Year/Model column not found in data")
-        
-        selected_competitors_for_coccurrence_filter = st.sidebar.multiselect(
-            "Show Products Priced by RC & Selected Competitor(s):",
-            options=[col for col in ALL_COMPETITOR_COLUMNS if col in df.columns],
-            help="Filters data to show only products where Racket Central AND at least one of the selected competitors have a price.",
-            key="dashboard_cooccurrence"
-        )
-
-        # Apply Categorical Filters
-        df_filtered = df.copy()
-        
-        # Apply BRAND filter
-        if brands_dashboard and 'BRAND' in df_filtered.columns:
-            # Include both selected values and handle NaN separately
-            brand_mask = df_filtered["BRAND"].astype(str).isin(brands_dashboard)
-            df_filtered = df_filtered[brand_mask]
-        
-        # Apply SPORT filter
-        if sports_dashboard and 'SPORT' in df_filtered.columns:
-            sport_mask = df_filtered["SPORT"].astype(str).isin(sports_dashboard)
-            df_filtered = df_filtered[sport_mask]
-        
-        # Apply TYPE1 filter
-        if type1s_dashboard and 'TYPE1' in df_filtered.columns:
-            type1_mask = df_filtered["TYPE1"].astype(str).isin(type1s_dashboard)
-            df_filtered = df_filtered[type1_mask]
-        
-        # Apply Year/Model filter
-        if year_models_dashboard and 'Year/Model' in df_filtered.columns:
-            year_model_mask = df_filtered["Year/Model"].astype(str).isin(year_models_dashboard)
-            df_filtered = df_filtered[year_model_mask]
-
-        # Numerical Filters Helper Function
-        def safe_add_range_slider(column_name, key_suffix=""):
-            """Safely create a range slider with proper error handling"""
-            # Check if column exists and has data
-            if column_name not in df_filtered.columns:
-                return None, None
-                
-            if df_filtered.empty:
-                return None, None
-                
-            # Get numeric values, but don't exclude NaN - just get valid ones for range calculation
-            numeric_values = pd.to_numeric(df_filtered[column_name], errors='coerce')
-            valid_values = numeric_values.dropna()
+        if not df_final_filtered.empty and RC_PRICE_COLUMN in df_final_filtered.columns:
+            rc_prices_b2c = pd.to_numeric(df_final_filtered[RC_PRICE_COLUMN], errors='coerce')
             
-            if len(valid_values) == 0:
-                return None, None
-            
-            min_val = valid_values.min()
-            max_val = valid_values.max()
-            
-            # Calculate appropriate step
-            if min_val == max_val:
-                # All values are the same
-                range_width = max(abs(min_val) * 0.1, 1.0)
-                min_range = min_val - range_width
-                max_range = max_val + range_width
-                step = range_width / 10
-            else:
-                min_range = min_val
-                max_range = max_val
-                value_range = max_val - min_val
+            # Ensure competitor columns exist before trying to access them
+            existing_b2c_comps = [col for col in B2C_COMPETITOR_COLS if col in df_final_filtered.columns]
+            if existing_b2c_comps:
+                b2c_comp_prices = df_final_filtered[existing_b2c_comps].apply(pd.to_numeric, errors='coerce')
+                min_b2c_comp_prices = b2c_comp_prices.min(axis=1, skipna=True)
                 
-                if value_range < 1:
-                    step = 0.01
-                elif value_range < 100:
-                    step = 0.1
-                else:
-                    step = value_range / 100
-                    step = max(step, 1.0)
-            
-            try:
-                # Create slider with initial value set to full range (no filtering by default)
-                selected_range = st.sidebar.slider(
-                    f"Filter by {column_name}:",
-                    min_value=float(min_range),
-                    max_value=float(max_range),
-                    value=(float(min_range), float(max_range)),  # Default to full range
-                    step=float(step),
-                    key=f"slider_{column_name.replace(' ', '_').replace('(', '').replace(')', '')}_{key_suffix}",
-                    help=f"Drag to filter. Products with missing {column_name} are always included."
-                )
+                comparable_mask_b2c = rc_prices_b2c.notna() & min_b2c_comp_prices.notna()
                 
-                # Only return the range if user has actually moved the slider from default
-                if selected_range == (float(min_range), float(max_range)):
-                    return None, None  # Don't apply filter if at default range
+                if comparable_mask_b2c.any():
+                    total_comparable_products_b2c = comparable_mask_b2c.sum()
                     
-                return selected_range
-            except Exception as e:
-                return None, None
+                    lowest_mask = rc_prices_b2c[comparable_mask_b2c] <= min_b2c_comp_prices[comparable_mask_b2c]
+                    rc_is_lowest_count_b2c = lowest_mask.sum()
+                    rc_is_higher_count_b2c = (~lowest_mask).sum()
 
-        # Numerical Filters (using sliders, handle potential NaNs and empty filtered data)
-        # (Keep existing add_range_slider and its applications as they were for the dashboard tab)
-        def add_range_slider(column_name, key_suffix=""): # Added key_suffix for unique keys
-            if df_filtered.empty or column_name not in df_filtered.columns or df_filtered[column_name].isnull().all():
-                st.sidebar.warning(f"No data or only missing values for '{column_name}' in current selection.")
-                return None, None
+        percentage_lowest_b2c = (rc_is_lowest_count_b2c / total_comparable_products_b2c * 100) if total_comparable_products_b2c > 0 else 0
+        percentage_higher_b2c = (rc_is_higher_count_b2c / total_comparable_products_b2c * 100) if total_comparable_products_b2c > 0 else 0
 
-            min_val = df_filtered[column_name].min()
-            max_val = df_filtered[column_name].max()
 
-            if pd.isna(min_val) or pd.isna(max_val):
-                 st.sidebar.warning(f"Cannot create slider for '{column_name}' due to missing values.")
-                 return None, None
+        # B2B KPIs
+        total_comparable_products_b2b = 0
+        rc_is_lowest_count_b2b = 0
+        rc_is_higher_count_b2b = 0
+        B2B_COMPETITOR_COLS = ['FROMUTH']
 
-            step = 1
-            if isinstance(min_val, float) or isinstance(max_val, float):
-                diff = max_val - min_val
-                if diff < 1 and diff > 0: step = 0.01
-                elif diff == 0: step = 0.1
-                else:
-                    step = (max_val - min_val) / 100
-                    step = max(step, 0.01)
+        if not df_final_filtered.empty and RC_B2B_PRICE_COLUMN in df_final_filtered.columns and B2B_COMPETITOR_COLS[0] in df_final_filtered.columns:
+            rc_prices_b2b = pd.to_numeric(df_final_filtered[RC_B2B_PRICE_COLUMN], errors='coerce')
+            fromuth_prices = pd.to_numeric(df_final_filtered[B2B_COMPETITOR_COLS[0]], errors='coerce')
             
-            if min_val == max_val:
-                 range_min_slider, range_max_slider = min_val - step * 5, max_val + step * 5
-            else:
-                 range_min_slider, range_max_slider = min_val, max_val
-            
-            if range_min_slider >= range_max_slider: range_max_slider = range_min_slider + step
+            comparable_mask_b2b = rc_prices_b2b.notna() & fromuth_prices.notna()
 
-            try:
-                selected_range = st.sidebar.slider(
-                    f"Select {column_name} Range:",
-                    min_value=float(range_min_slider),
-                    max_value=float(range_max_slider),
-                    value=(float(range_min_slider), float(range_max_slider)),
-                    step=float(step) if step > 0 else None,
-                    key=f"slider_{column_name.replace(' ', '_')}_{key_suffix}" # Unique key
-                )
-                return selected_range
-            except Exception as e:
-                st.sidebar.error(f"Error creating slider for {column_name}: {e}")
-                return None, None
+            if comparable_mask_b2b.any():
+                total_comparable_products_b2b = comparable_mask_b2b.sum()
 
-        # --- Apply Text Search Filters ---
-        df_final_filtered = df_filtered.copy() # Start with categorically filtered data
+                lowest_mask_b2b = rc_prices_b2b[comparable_mask_b2b] <= fromuth_prices[comparable_mask_b2b]
+                rc_is_lowest_count_b2b = lowest_mask_b2b.sum()
+                rc_is_higher_count_b2b = (~lowest_mask_b2b).sum()
 
-        if ean_search and 'EAN' in df_final_filtered.columns:
-            df_final_filtered = df_final_filtered[df_final_filtered['EAN'].astype(str).str.contains(ean_search, case=False, na=False)]
-        if sku_search and 'SKU' in df_final_filtered.columns:
-            df_final_filtered = df_final_filtered[df_final_filtered['SKU'].astype(str).str.contains(sku_search, case=False, na=False)]
-        if search_term and 'ITEM NAME' in df_final_filtered.columns:
-             df_final_filtered = df_final_filtered[df_final_filtered['ITEM NAME'].str.contains(search_term, case=False, na=False)]
-
-        # Apply Co-occurrence Filter
-        if selected_competitors_for_coccurrence_filter and RC_PRICE_COLUMN in df_final_filtered.columns:
-            # Create boolean mask for valid RC prices
-            rc_price_valid = pd.notna(pd.to_numeric(df_final_filtered[RC_PRICE_COLUMN], errors='coerce'))
-            
-            # Create boolean mask for having at least one valid competitor price
-            competitor_price_valid = pd.Series(False, index=df_final_filtered.index)
-            
-            for comp_col in selected_competitors_for_coccurrence_filter:
-                if comp_col in df_final_filtered.columns:
-                    comp_prices_valid = pd.notna(pd.to_numeric(df_final_filtered[comp_col], errors='coerce'))
-                    competitor_price_valid = competitor_price_valid | comp_prices_valid
-            
-            # Apply combined filter
-            df_final_filtered = df_final_filtered[rc_price_valid & competitor_price_valid]
-
-        # Optional Numerical Filters
-        st.sidebar.subheader("Optional Numerical Filters")
-        st.sidebar.caption("These filters are applied after categorical filters")
+        percentage_lowest_b2b = (rc_is_lowest_count_b2b / total_comparable_products_b2b * 100) if total_comparable_products_b2b > 0 else 0
+        percentage_higher_b2b = (rc_is_higher_count_b2b / total_comparable_products_b2b * 100) if total_comparable_products_b2b > 0 else 0
         
-        # Common numerical columns to filter by
-        numerical_filter_columns = [
-            'LOWEST PRICE (B2C)', 'RACKET CENTRAL B2C', 'Unit Cost', 'MAP',
-            'Total Stock (QTY)', 'Stock Days on Hand', 'B2C Marginal Contribution (%)'
-        ]
-        
-        # Add numerical filters
-        applied_filters = {}
-        for col in numerical_filter_columns:
-            if col in df_final_filtered.columns:
-                range_result = safe_add_range_slider(col, "dashboard")
-                if range_result and range_result != (None, None):
-                    min_filter, max_filter = range_result
-                    # Apply the filter to df_final_filtered - INCLUDE NaN values
-                    numeric_values = pd.to_numeric(df_final_filtered[col], errors='coerce')
-                    # Keep NaN values AND values within range
-                    filter_mask = (numeric_values.isna()) | ((numeric_values >= min_filter) & (numeric_values <= max_filter))
-                    rows_before = len(df_final_filtered)
-                    df_final_filtered = df_final_filtered[filter_mask]
-                    applied_filters[col] = (min_filter, max_filter)
-        
-        # Show applied filters summary
-        if applied_filters:
-            st.sidebar.caption(f"Active numerical filters: {len(applied_filters)}")
-            
-
-        # --- Calculate Price Comparison KPIs ---
-        total_comparable_products_kpi = 0
-        rc_is_lowest_count_kpi = 0
-        rc_is_higher_count_kpi = 0
-        percentage_lowest_kpi = 0.0
-        percentage_higher_kpi = 0.0
-        available_competitors_for_kpi_count = 0
-
-        if not df_final_filtered.empty:
-            # Determine which competitors to consider for these main KPIs
-            competitors_to_consider_for_main_kpi = []
-            if selected_competitors_for_coccurrence_filter: # User has specifically filtered by competitors
-                competitors_to_consider_for_main_kpi = [
-                    col for col in selected_competitors_for_coccurrence_filter
-                    if col in df_final_filtered.columns and not df_final_filtered[col].isnull().all()
-                ]
-            else: # No specific competitor filter, so consider all available in the (already filtered) data
-                competitors_to_consider_for_main_kpi = [
-                    col for col in ALL_COMPETITOR_COLUMNS
-                    if col in df_final_filtered.columns and not df_final_filtered[col].isnull().all()
-                ]
-            available_competitors_for_kpi_count = len(competitors_to_consider_for_main_kpi)
-
-            if RC_PRICE_COLUMN in df_final_filtered.columns and not df_final_filtered[RC_PRICE_COLUMN].isnull().all() and competitors_to_consider_for_main_kpi:
-                for index, row in df_final_filtered.iterrows(): # df_final_filtered is already pre-filtered by co-occurrence if selected
-                    rc_price_val = pd.to_numeric(row[RC_PRICE_COLUMN], errors='coerce')
-                    # RC price validity is already ensured if co-occurrence filter was active. 
-                    # If not active, we might have rows with RC NaN, but the next check handles it.
-                    if pd.isna(rc_price_val):
-                        continue
-
-                    current_competitor_prices_for_kpi = []
-                    for comp_col in competitors_to_consider_for_main_kpi:
-                        comp_price = pd.to_numeric(row.get(comp_col), errors='coerce')
-                        if pd.notna(comp_price):
-                            current_competitor_prices_for_kpi.append(comp_price)
-
-                    if not current_competitor_prices_for_kpi: # No prices from *considered* competitors for this row
-                        continue 
-
-                    total_comparable_products_kpi += 1 # This row is comparable based on RC and *considered* competitors
-
-                    min_comp_price = min(current_competitor_prices_for_kpi)
-                    if rc_price_val <= min_comp_price:
-                        rc_is_lowest_count_kpi += 1
-                    
-                    is_higher_this_row = False
-                    for comp_price_val_check in current_competitor_prices_for_kpi:
-                        if rc_price_val > comp_price_val_check:
-                            is_higher_this_row = True
-                            break
-                    if is_higher_this_row:
-                        rc_is_higher_count_kpi += 1
-                
-                if total_comparable_products_kpi > 0:
-                    percentage_lowest_kpi = (rc_is_lowest_count_kpi / total_comparable_products_kpi) * 100
-                    percentage_higher_kpi = (rc_is_higher_count_kpi / total_comparable_products_kpi) * 100
 
         # --- Main Display ---
         st.header("📊 Dashboard Overview")
@@ -596,30 +583,47 @@ else:
             kpi_cols_row3[1].metric("Avg. RC B2B Margin %", f"{avg_b2b_margin:.1%}" if pd.notna(avg_b2b_margin) else "N/A",
                                    help="Average B2B Margin: ((RACKET CENTRAL B2B - Unit Cost) / RACKET CENTRAL B2B)")
 
-            # Add Price Competitiveness KPIs
+            # --- Price Competitiveness KPIs ---
             st.subheader("Price Competitiveness")
-            kpi_comp_row = st.columns(3)
-            kpi_comp_row[0].metric(
-                "Total Comparable Products",
-                f"{total_comparable_products_kpi}",
-                help="Number of products where both RC and at least one competitor have valid prices for comparison"
+            
+            st.markdown("##### B2C Competitiveness")
+            kpi_comp_row_b2c = st.columns(3)
+            kpi_comp_row_b2c[0].metric(
+                "Total Comparable Products (B2C)",
+                f"{total_comparable_products_b2c}",
+                help="Number of products where both Racket Central B2C and at least one B2C competitor have valid prices."
             )
-            kpi_comp_row[1].metric(
-                f"RC Lowest Priced",
-                f"{rc_is_lowest_count_kpi} ({percentage_lowest_kpi:.1f}%)",
-                help="Products where RACKET CENTRAL B2C price ≤ minimum competitor price among comparable products"
+            kpi_comp_row_b2c[1].metric(
+                f"RC Lowest Priced (B2C)",
+                f"{rc_is_lowest_count_b2c} ({percentage_lowest_b2c:.1f}%)",
+                help="Products where RACKET CENTRAL B2C price is less than or equal to the minimum B2C competitor price."
             )
-            kpi_comp_row[2].metric(
-                f"RC Higher Priced",
-                f"{rc_is_higher_count_kpi} ({percentage_higher_kpi:.1f}%)",
-                help="Products where RACKET CENTRAL B2C price > at least one competitor price among comparable products"
+            kpi_comp_row_b2c[2].metric(
+                f"RC Higher Priced (B2C)",
+                f"{rc_is_higher_count_b2c} ({percentage_higher_b2c:.1f}%)",
+                help="Products where RACKET CENTRAL B2C price is greater than the minimum B2C competitor price."
             )
-            if selected_competitors_for_coccurrence_filter:
-                st.caption(f"Competitiveness KPIs based on products also priced by {available_competitors_for_kpi_count} selected competitor(s).")
-            elif available_competitors_for_kpi_count > 0:
-                st.caption(f"Competitiveness KPIs based on {available_competitors_for_kpi_count} active competitor(s) in the filtered data.")
-            else:
-                st.caption("No active competitor data in the filtered selection for these KPIs.")
+            st.caption("B2C Competitors: JUST PADDLES, PADEL USA, CASAS PADEL, PICKLEBALL CENTRAL.")
+            st.divider()
+
+            st.markdown("##### B2B Competitiveness")
+            kpi_comp_row_b2b = st.columns(3)
+            kpi_comp_row_b2b[0].metric(
+                "Total Comparable Products (B2B)",
+                f"{total_comparable_products_b2b}",
+                help="Number of products where both Racket Central B2B and FROMUTH have valid prices."
+            )
+            kpi_comp_row_b2b[1].metric(
+                f"RC Lowest Priced (B2B)",
+                f"{rc_is_lowest_count_b2b} ({percentage_lowest_b2b:.1f}%)",
+                help="Products where RACKET CENTRAL B2B price is less than or equal to FROMUTH's price."
+            )
+            kpi_comp_row_b2b[2].metric(
+                f"RC Higher Priced (B2B)",
+                f"{rc_is_higher_count_b2b} ({percentage_higher_b2b:.1f}%)",
+                help="Products where RACKET CENTRAL B2B price is greater than FROMUTH's price."
+            )
+            st.caption("B2B Competitor: FROMUTH.")
 
             st.divider()
 
@@ -627,37 +631,76 @@ else:
             st.subheader("Filtered Data")
             st.caption("Detailed product data based on the selected filters. Use the download button to export.")
 
-            # --- Add 'RC Cheaper?' column to df_final_filtered for display and potential export ---
-            if not df_final_filtered.empty:
-                rc_cheaper_status_list = []
-                for index, row in df_final_filtered.iterrows():
-                    rc_price_val = pd.to_numeric(row.get(RC_PRICE_COLUMN), errors='coerce')
-                    status = "N/A"  # Default status
+            with st.expander("ℹ️ How is 'B2B Suggested Price' calculated in this dashboard?"):
+                st.markdown("""
+                The **B2B Suggested Price** is calculated dynamically within this dashboard based on the following priority:
 
-                    if pd.notna(rc_price_val):
-                        competitor_prices_for_row = []
-                        for comp_col in ALL_COMPETITOR_COLUMNS:
-                            if comp_col in row:
-                                comp_price = pd.to_numeric(row[comp_col], errors='coerce')
-                                if pd.notna(comp_price):
-                                    competitor_prices_for_row.append(comp_price)
-                        
-                        if competitor_prices_for_row:  # If there are competitor prices
-                            min_competitor_price = min(competitor_prices_for_row)
-                            if rc_price_val < min_competitor_price:
-                                status = "Cheaper"
-                            elif rc_price_val == min_competitor_price:
-                                status = "Equal"
-                            else: # rc_price_val > min_competitor_price
-                                status = "Higher"
-                        # else: RC price exists, but no competitor prices, status remains "N/A"
-                    # else: RC price is NaN, status remains "N/A"
-                    rc_cheaper_status_list.append(status)
-                df_final_filtered['RC Cheaper?'] = rc_cheaper_status_list
+                1.  **Competitor Pricing:**
+                    - If both `RACKET CENTRAL B2B` and `FROMUTH` have a price, the **lowest of the two** is used.
+                    - If only one has a price, that price is used.
+                
+                2.  **MAP Fallback:**
+                    - If no competitor prices are available, the `MAP` (Minimum Advertised Price) is used.
+
+                3.  **Cost-Based Fallback:**
+                    - If none of the above are available, the price is calculated as `Unit Cost` * 1.15.
+
+                4.  **Blank:**
+                    - If none of these conditions can be met, the cell is left blank.
+
+                *Any calculated price of zero is also intentionally shown as a blank cell.*
+                """)
+
+            # --- Add 'RC B2C Cheaper?' and 'RC B2B Cheaper?' columns ---
+            if not df_final_filtered.empty:
+                b2c_cheaper_status_list = []
+                b2b_cheaper_status_list = []
+
+                B2C_COMPETITOR_COLUMNS = ['JUST PADDLES', 'PADEL USA', 'CASAS PADEL', 'PICKLEBALL CENTRAL']
+                B2B_COMPETITOR_COLUMNS = ['FROMUTH']
+                RC_B2C_PRICE_COLUMN = 'RACKET CENTRAL B2C'
+                # Note: RC_B2B_PRICE_COLUMN is already defined globally
+
+                for index, row in df_final_filtered.iterrows():
+                    # B2C Calculation
+                    rc_b2c_price = pd.to_numeric(row.get(RC_B2C_PRICE_COLUMN), errors='coerce')
+                    b2c_status = "N/A"
+                    if pd.notna(rc_b2c_price):
+                        b2c_competitor_prices = [pd.to_numeric(row.get(c), errors='coerce') for c in B2C_COMPETITOR_COLUMNS if c in row]
+                        b2c_competitor_prices = [p for p in b2c_competitor_prices if pd.notna(p)]
+                        if b2c_competitor_prices:
+                            min_b2c_comp_price = min(b2c_competitor_prices)
+                            if rc_b2c_price < min_b2c_comp_price:
+                                b2c_status = "Cheaper"
+                            elif rc_b2c_price == min_b2c_comp_price:
+                                b2c_status = "Equal"
+                            else:
+                                b2c_status = "Higher"
+                    b2c_cheaper_status_list.append(b2c_status)
+
+                    # B2B Calculation
+                    rc_b2b_price = pd.to_numeric(row.get(RC_B2B_PRICE_COLUMN), errors='coerce')
+                    b2b_status = "N/A"
+                    if pd.notna(rc_b2b_price):
+                        b2b_competitor_prices = [pd.to_numeric(row.get(c), errors='coerce') for c in B2B_COMPETITOR_COLUMNS if c in row]
+                        b2b_competitor_prices = [p for p in b2b_competitor_prices if pd.notna(p)]
+                        if b2b_competitor_prices:
+                            min_b2b_comp_price = min(b2b_competitor_prices)
+                            if rc_b2b_price < min_b2b_comp_price:
+                                b2b_status = "Cheaper"
+                            elif rc_b2b_price == min_b2b_comp_price:
+                                b2b_status = "Equal"
+                            else:
+                                b2b_status = "Higher"
+                    b2b_cheaper_status_list.append(b2b_status)
+                
+                df_final_filtered['RC B2C Cheaper?'] = b2c_cheaper_status_list
+                df_final_filtered['RC B2B Cheaper?'] = b2b_cheaper_status_list
             else:
-                # Ensure the column exists even if df_final_filtered is empty, for consistent downstream processing
-                if 'RC Cheaper?' not in df_final_filtered.columns:
-                     df_final_filtered['RC Cheaper?'] = pd.Series(dtype='object')
+                # Ensure the columns exist even if df_final_filtered is empty
+                df_final_filtered['RC B2C Cheaper?'] = pd.Series(dtype='object')
+                df_final_filtered['RC B2B Cheaper?'] = pd.Series(dtype='object')
+
 
             # --- Prepare df_for_ui for the main table in the UI ---
             # Columns to explicitly hide from the main display table in the UI
@@ -665,7 +708,7 @@ else:
             # Columns to always drop from any display/export (e.g. temporary KPI calculation helpers)
             cols_to_always_drop = ['Stock Value', 'Sales Value (12M)'] 
 
-            # Start with all columns from df_final_filtered (which now includes 'RC Cheaper?')
+            # Start with all columns from df_final_filtered (which now includes new 'Cheaper?' columns)
             potential_ui_cols = df_final_filtered.columns.tolist()
             
             # Remove columns that should never be shown or were temporary
@@ -673,47 +716,51 @@ else:
             # Further refine for UI: remove columns designated to be hidden in this specific table
             actual_ui_cols = [col for col in actual_ui_cols if col not in cols_to_hide_in_ui]
 
-            # Reorder to place 'RC Cheaper?' after 'ITEM NAME' if both exist
-            if 'ITEM NAME' in actual_ui_cols and 'RC Cheaper?' in actual_ui_cols:
-                actual_ui_cols.remove('RC Cheaper?')
-                try:
-                    item_name_idx = actual_ui_cols.index('ITEM NAME')
-                    actual_ui_cols.insert(item_name_idx + 1, 'RC Cheaper?')
-                except ValueError:
-                    # If 'ITEM NAME' isn't in actual_ui_cols for some reason, just append 'RC Cheaper?' at the end
-                    actual_ui_cols.append('RC Cheaper?')
-            elif 'RC Cheaper?' not in actual_ui_cols and 'RC Cheaper?' in df_final_filtered.columns.tolist() : # if it got filtered out but should be there
-                actual_ui_cols.append('RC Cheaper?')
+            # Reorder to place the new 'Cheaper?' columns after 'ITEM NAME'
+            if 'ITEM NAME' in actual_ui_cols:
+                item_name_idx = actual_ui_cols.index('ITEM NAME')
+                
+                # Insert 'RC B2B Cheaper?' if it exists
+                if 'RC B2B Cheaper?' in actual_ui_cols:
+                    actual_ui_cols.remove('RC B2B Cheaper?')
+                    actual_ui_cols.insert(item_name_idx + 1, 'RC B2B Cheaper?')
+                
+                # Insert 'RC B2C Cheaper?' if it exists
+                if 'RC B2C Cheaper?' in actual_ui_cols:
+                    actual_ui_cols.remove('RC B2C Cheaper?')
+                    actual_ui_cols.insert(item_name_idx + 1, 'RC B2C Cheaper?')
 
             # Create the DataFrame for UI display
             df_for_ui = df_final_filtered[actual_ui_cols] if actual_ui_cols and not df_final_filtered.empty else pd.DataFrame(columns=actual_ui_cols)
             
-            # Define styling function for the 'RC Cheaper?' column
+            # Define styling function for the 'Cheaper?' columns
             def style_rc_cheaper(val):
-                if val == "Cheaper": # Changed from "Yes"
+                if val == "Cheaper":
                     return 'background-color: lightgreen; color: darkgreen; font-weight: bold;'
-                elif val == "Higher": # Changed from "No"
+                elif val == "Higher":
                     return 'background-color: lightcoral; color: darkred; font-weight: bold;'
-                elif val == "Equal": # New status
+                elif val == "Equal":
                     return 'background-color: lightyellow; color: #B8860B; font-weight: bold;' # DarkGoldenrod
                 else:  # For "N/A"
                     return '' # No special style for N/A
 
             if not df_for_ui.empty:
                 df_for_ui_clean = clean_dataframe_for_arrow(df_for_ui)
-                if 'RC Cheaper?' in df_for_ui_clean.columns:
+                columns_to_style = [col for col in ['RC B2C Cheaper?', 'RC B2B Cheaper?'] if col in df_for_ui_clean.columns]
+                
+                if columns_to_style:
                     st.dataframe(
-                        df_for_ui_clean.style.map(style_rc_cheaper, subset=['RC Cheaper?']),
+                        df_for_ui_clean.style.map(style_rc_cheaper, subset=columns_to_style),
                         use_container_width=True,
                         hide_index=True
                     )
-                else: # Display without styling if 'RC Cheaper?' column isn't in the final UI df
+                else: # Display without styling if columns are not in the final UI df
                     st.dataframe(df_for_ui_clean, use_container_width=True, hide_index=True)
             else:
                 st.info("No data to display in the main table based on current filters.")
 
             # Function to convert DF to CSV
-            # The CSV export should use df_final_filtered (which includes 'RC Cheaper?' and original columns like BRAND, SPORT, TYPE1)
+            # The CSV export should use df_final_filtered (which includes the new columns)
             # but drop the temporary calculation columns.
             @st.cache_data # Cache conversion
             def convert_df_to_csv(df_to_convert):
@@ -721,7 +768,7 @@ else:
                 df_to_export = df_to_convert.drop(columns=cols_to_always_drop, errors='ignore')
                 return df_to_export.to_csv(index=False).encode('utf-8')
 
-            csv = convert_df_to_csv(df_final_filtered) # Pass the df_final_filtered (now with 'RC Cheaper?')
+            csv = convert_df_to_csv(df_final_filtered) # Pass the df_final_filtered
 
             st.download_button(
                 label="📥 Download Filtered Data as CSV",
